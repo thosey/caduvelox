@@ -1,0 +1,3 @@
+[submodule "external/lock-free-memory-pool"]
+	path = external/lock-free-memory-pool
+	url = https://github.com/thosey/lock-free-memory-pool.git

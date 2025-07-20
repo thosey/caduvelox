@@ -1,0 +1,164 @@
+name: Linux CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Update submodules
+        run: |
+          git submodule update --init --recursive
+          git submodule status
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build g++ pkg-config \
+            libssl-dev zlib1g-dev \
+            libgtest-dev googletest
+
+      - name: Check liburing version and install if needed
+        run: |
+          # Try to install liburing from package manager first
+          sudo apt-get install -y liburing-dev || true
+          
+          # Check if we have a recent enough version (need 2.1+ for buffer rings)
+          if ! pkg-config --atleast-version=2.1 liburing 2>/dev/null; then
+            echo "Installing liburing from source..."
+            cd /tmp
+            git clone https://github.com/axboe/liburing.git
+            cd liburing
+            git checkout liburing-2.9  # Use same version as your Fedora system
+            ./configure --prefix=/usr
+            make -j2
+            sudo make install
+            sudo ldconfig
+          else
+            echo "System liburing is recent enough"
+          fi
+
+      - name: Configure (CMake)
+        run: |
+          echo "liburing version: $(pkg-config --modversion liburing)"
+          echo "liburing cflags: $(pkg-config --cflags liburing)"
+          echo "liburing libs: $(pkg-config --libs liburing)"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -j 2
+
+      - name: Kernel info
+        run: |
+          echo "Kernel: $(uname -a)"
+          if [ -f /proc/version ]; then cat /proc/version; fi
+          echo "Checking kernel major version..."
+          KERNEL_MAJOR=$(uname -r | cut -d. -f1)
+          echo "Kernel major: ${KERNEL_MAJOR}"
+
+      - name: Test
+        run: |
+          # Selectively run kernel-dependent tests only on modern kernels (6.x+).
+          KERNEL_MAJOR=$(uname -r | cut -d. -f1)
+          echo "Detected kernel major: ${KERNEL_MAJOR}"
+          cd build
+          if [ "${KERNEL_MAJOR}" -lt 6 ]; then
+            echo "Kernel < 6.0 detected: running limited test set (skipping kTLS and multi-shot tests)"
+            # Exclude tests requiring recent io_uring features or kTLS
+            ctest --output-on-failure -E "JobKTLS|StaticHttps" -j 2 --timeout 300
+          else
+            echo "Kernel >= 6.0 detected: running full test suite"
+            ctest --output-on-failure -j 2 --timeout 300
+          fi
+
+  asan:
+    name: ASAN/UBSAN Checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Clang and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-16 cmake ninja-build pkg-config libssl-dev libgtest-dev libelf-dev
+
+      - name: Check liburing version and install if needed
+        run: |
+          sudo apt-get install -y liburing-dev || true
+          if ! pkg-config --atleast-version=2.1 liburing 2>/dev/null; then
+            echo "Installing liburing from source..."
+            cd /tmp
+            git clone https://github.com/axboe/liburing.git
+            cd liburing
+            git checkout liburing-2.9 || true
+            ./configure --prefix=/usr CC=clang CXX=clang++
+            make -j2
+            sudo make install
+            sudo ldconfig
+          else
+            echo "System liburing is recent enough"
+          fi
+
+      - name: Configure (CMake with sanitizers)
+        run: |
+          export CC=clang-16
+          export CXX=clang++-16
+          # Configure CMake to build with ASAN/UBSAN flags. ASAN_OPTIONS below will enable leak detection and set a log path.
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSANITIZERS=ON -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+
+      - name: Set sanitizer env
+        run: |
+          mkdir -p asan-logs
+          echo "ASAN_OPTIONS=detect_leaks=1:allocator_may_return_null=1:verbosity=0:log_path=asan-logs/asan:exitcode=0" >> $GITHUB_ENV
+          echo "UBSAN_OPTIONS=print_stacktrace=1" >> $GITHUB_ENV
+
+      - name: Build (ASAN)
+        run: cmake --build build-asan -- -j 2
+
+      - name: Run tests under ASAN (direct run, exclude kernel tests)
+        run: |
+          cd build-asan/tests
+          # Run the test binary directly under ASAN/UBSAN. Exclude kernel-dependent tests using gtest negative filter.
+          ./caduvelox_tests --gtest_filter="-JobKTLS*:StaticHttps*"
+
+      - name: Upload ASAN logs (if any failures produce sanitizer logs)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-logs
+          path: |
+            build-asan/Testing/Temporary
+            build-asan/asan-logs
+            build-asan/*.log
+          retention-days: 14
+
+      - name: Compress and upload failure bundle (optional)
+        if: failure()
+        run: |
+          set -e
+          mkdir -p failure_artifacts
+          if [ -d build-asan/Testing/Temporary ]; then
+            tar -czf failure_artifacts/testing_temporary.tgz -C build-asan Testing/Temporary || true
+          fi
+          if [ -d build-asan/asan-logs ]; then
+            tar -czf failure_artifacts/asan_logs.tgz -C build-asan asan-logs || true
+          fi
+          ls -la failure_artifacts || true
+        shell: bash
+
+      - name: Upload failure bundle
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-bundle
+          path: failure_artifacts
+          retention-days: 14

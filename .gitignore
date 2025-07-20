@@ -1,0 +1,229 @@
+
+# Compiled binaries
+server
+server_external
+error_demo
+lambda_demo
+connection_demo
+server_tests
+http_server
+tls_server
+
+*.pem
+# Object files
+*.o
+*.obj
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Static analysis
+*.scan
+
+# Core dumps
+core
+core.*
+vgcore.*
+
+# Log files
+*.log
+server_errors.log
+
+# Temporary files
+*.tmp
+*.temp
+*~
+.#*
+\#*#
+
+# Build directories
+build/
+Build/
+BUILD/
+debug/
+Debug/
+release/
+Release/
+dist/
+target/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+
+# IDE files
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# Visual Studio
+.vs/
+*.vcxproj*
+*.sln
+*.user
+*.aps
+*.pch
+*.vspscc
+*_i.c
+*_p.c
+*.ncb
+*.suo
+*.tlb
+*.tlh
+*.bak
+*.cache
+*.ilk
+*.log
+[Bb]in
+[Dd]ebug*/
+*.lib
+*.sbr
+obj/
+[Rr]elease*/
+_ReSharper*/
+[Tt]est[Rr]esult*
+
+# CLion
+.idea/
+cmake-build-*/
+
+# Qt Creator
+*.pro.user
+*.pro.user.*
+*.qbs.user
+*.qbs.user.*
+*.moc
+*.moc.cpp
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qmlc
+*.jsc
+Makefile*
+*build-*
+
+# Xcode
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+
+# Eclipse CDT
+.metadata
+bin/
+tmp/
+*.tmp
+*.bak
+*.swp
+*~.nib
+local.properties
+.settings/
+.loadpath
+.recommenders
+.project
+.cproject
+
+# Conan
+conanfile.txt
+conaninfo.txt
+conanbuildinfo.*
+conan.lock
+
+# Vcpkg
+vcpkg_installed/
+
+# Package managers
+node_modules/
+.npm
+.yarn/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+
+# Profiling data
+*.prof
+gmon.out
+callgrind.out.*
+massif.out.*
+*.gcov
+*.gcno
+*.gcda
+
+# Valgrind
+vgcore.*
+
+# AddressSanitizer
+*.asan
+
+# Documentation generated files
+doc/html/
+doc/latex/
+docs/html/
+docs/latex/
+
+# Test coverage
+coverage/
+*.coverage
+htmlcov/
+
+# Benchmark results
+benchmark_results/
+*.bench
+
+# Performance data
+perf.data*

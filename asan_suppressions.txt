@@ -1,0 +1,6 @@
+# ASan suppression file for known third-party library leaks
+# OpenSSL global state leaks (cleaned up at process exit)
+leak:libssl.so
+leak:libcrypto.so
+leak:CRYPTO_malloc
+leak:CRYPTO_zalloc

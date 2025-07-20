@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Caduvelox - High-Performance C++ HTTPS Server</title>
+    <link rel="icon" type="image/png" href="/files/logo/caduvelox-logo-full-color.png">
+    <link rel="stylesheet" href="/files/style.css">
+    <script src="/files/script.js" defer></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Caduvelox</h1>
+        <div class="subtitle">High-Performance C++ HTTPS Server Framework</div>
+        
+        <div class="hero">
+            <div class="logo">
+                <img src="/files/logo/caduvelox-logo-full-color.png" alt="Caduvelox Logo" />
+            </div>
+            
+            <div class="hero-content">
+                <div class="description">
+                    <p>A modern, zero-copy web server built with <strong>C++20</strong>, <strong>io_uring</strong>, and <strong>kTLS</strong>. 
+                    Designed for maximum performance with minimal CPU overhead through kernel-space optimizations.</p>
+                </div>
+
+                <div class="cta">
+                    <a href="https://github.com/thosey/caduvelox" class="button" target="_blank">
+                        <span class="button-icon">⭐</span> View on GitHub
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <div class="quick-start">
+            <h2>Quick Start</h2>
+            <p>Get up and running in minutes:</p>
+            <div class="code">
+# Clone the repository<br>
+git clone https://github.com/thosey/caduvelox.git<br>
+cd caduvelox<br>
+git submodule update --init --recursive
+<br>
+# Build the project<br>
+mkdir build && cd build<br>
+cmake ..<br>
+make -j$(nproc)<br>
+<br>
+# Run the static HTTPS server demo<br>
+cd ../examples/static_https_server/build<br>
+cmake .. && make<br>
+./static_https_server
+            </div>
+            <p class="note">📝 <strong>Note:</strong> Requires Linux 5.11+ with io_uring support and OpenSSL 3.0+ for kTLS.</p>
+        </div>
+
+
+        <div class="features">
+            <div class="feature">
+                <h3>⚡ io_uring</h3>
+                <p>Async I/O with Linux's fastest interface. Zero syscalls per request in steady state.</p>
+            </div>
+            
+            <div class="feature">
+                <h3>🔐 Kernel TLS</h3>
+                <p>Hardware-accelerated encryption offloaded to the kernel for maximum throughput.</p>
+            </div>
+            
+            <div class="feature">
+                <h3>🔗 Zero-Copy</h3>
+                <p>Direct file→socket transfers via linked splice operations. No userspace buffers.</p>
+            </div>
+            
+            <div class="feature">
+                <h3>🎯 Job-Based</h3>
+                <p>Efficient task scheduling with worker pools and lock-free coordination.</p>
+            </div>
+        </div>
+
+        <div class="api-section">
+            <h2>Flexible API Design</h2>
+            <p class="api-intro">Build exactly what you need with two complementary APIs:</p>
+            
+            <div class="api-layers">
+                <div class="api-layer">
+                    <h3>🌐 High-Level HTTP API</h3>
+                    <p>Express-style routing for REST APIs, web services, and rapid prototyping.</p>
+                    <div class="code">
+server.addRoute("GET", "/api/users", [](auto& req, auto& res) {<br>
+&nbsp;&nbsp;res.json("{\"users\": []}");<br>
+});<br>
+<br>
+server.addRoute("POST", "/api/data", [](auto& req, auto& res) {<br>
+&nbsp;&nbsp;res.status(201).json(processData(req.body));<br>
+});
+                    </div>
+                </div>
+                
+                <div class="api-layer">
+                    <h3>⚙️ Low-Level Job API</h3>
+                    <p>Define custom io_uring handlers for maximum control. Build custom protocols, proxies, or specialized servers.</p>
+                    <p><strong>Composable Job Types:</strong></p>
+                    <ul class="job-list">
+                        <li>
+                            <div class="job-title">
+                                <strong><a href="https://github.com/thosey/caduvelox/blob/main/include/caduvelox/jobs/AcceptJob.hpp" target="_blank">AcceptJob</a></strong>
+                                <span class="badge">multi-shot</span>
+                            </div>
+                            <div class="job-desc">Accept incoming connections</div>
+                        </li>
+                        <li>
+                            <div class="job-title">
+                                <strong><a href="https://github.com/thosey/caduvelox/blob/main/include/caduvelox/http/HttpConnectionRecvHandler.hpp" target="_blank">MultiShotRecvJob</a></strong>
+                                <span class="badge">multi-shot</span>
+                            </div>
+                            <div class="job-desc">Efficient multi-shot reads</div>
+                        </li>
+                        <li>
+                            <div class="job-title">
+                                <strong><a href="https://github.com/thosey/caduvelox/blob/main/include/caduvelox/jobs/WriteJob.hpp" target="_blank">WriteJob</a></strong>
+                            </div>
+                            <div class="job-desc">Send data with buffering</div>
+                        </li>
+                        <li>
+                            <div class="job-title">
+                                <strong><a href="https://github.com/thosey/caduvelox/blob/main/include/caduvelox/jobs/SpliceFileJob.hpp" target="_blank">SpliceFileJob</a></strong>
+                            </div>
+                            <div class="job-desc">Zero-copy file transfers</div>
+                        </li>
+                        <li>
+                            <div class="job-title">
+                                <strong><a href="https://github.com/thosey/caduvelox/blob/main/include/caduvelox/http/HTTPFileJob.hpp" target="_blank">HTTPFileJob</a></strong>
+                            </div>
+                            <div class="job-desc">HTTP file serving with range support</div>
+                        </li>
+                        <li>
+                            <div class="job-title">
+                                <strong><a href="https://github.com/thosey/caduvelox/blob/main/include/caduvelox/jobs/KTLSJob.hpp" target="_blank">KTLSJob</a></strong>
+                            </div>
+                            <div class="job-desc">TLS handshake and kTLS setup</div>
+                        </li>
+                    </ul>
+                    <p class="job-note">Multi-shot operations automatically rearm for maximum efficiency. Combine these building blocks or create your own Job types to build exactly what you need.</p>
+                </div>
+            </div>
+            
+            <p class="api-note">💡 <strong>This site is an example!</strong> The static HTTPS server demonstrates the high-level HTTP API with zero-copy file serving. Check the examples folder for more use cases.</p>
+        </div>
+
+        <div class="footer">
+            <p>Built with C++20 • io_uring • kTLS • OpenSSL</p>
+            <p><a href="https://github.com/thosey/caduvelox" target="_blank">github.com/thosey/caduvelox</a></p>
+        </div>
+    </div>
+</body>
+</html>
