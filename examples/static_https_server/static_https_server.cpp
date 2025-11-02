@@ -4,19 +4,26 @@
  * Demonstrates serving static files over HTTPS using the job-based
  * architecture with zero-copy operations.
  * 
- * Usage: ./static_https_server <document_root> [port]
+ * Usage: ./static_https_server <document_root> [port] [log_file]
+ * 
+ * Examples:
+ *   ./static_https_server static_site 8443              # Console logging
+ *   ./static_https_server /var/www 443 /var/log/app.log # File logging
  * 
  * Features:
  * - HTTPS with KTLS support
  * - Static file serving with zero-copy
  * - Path traversal protection
  * - MIME type detection
+ * - File or console logging with SIGHUP log rotation
  */
 
 #include "caduvelox/Server.hpp"
 #include "caduvelox/http/HttpServer.hpp"
 #include "caduvelox/http/HttpTypes.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
+#include "caduvelox/logger/FileLogger.hpp"
+#include "caduvelox/logger/AsyncLogger.hpp"
 #include <iostream>
 #include <filesystem>
 #include <fstream>
@@ -34,17 +41,32 @@ static std::unique_ptr<HttpServer> https_server;
 
 int main(int argc, char** argv) {
     try {
-        // Usage: ./static_https_server [document_root] [port]
+        // Parse command-line arguments
         std::string docroot = argc > 1 ? argv[1] : "static_site";
         int port = argc > 2 ? std::stoi(argv[2]) : 8443;
+        std::string log_file = argc > 3 ? argv[3] : "";
 
         std::cout << "Starting static HTTPS server (job-based)\n";
         std::cout << "Document root: " << docroot << "\n";
         std::cout << "Port: " << port << "\n";
 
-        // Set up console logger
-        static ConsoleLogger console_logger;
-        Logger::setGlobalLogger(&console_logger);
+        // Set up logger based on whether log file is specified
+        static std::unique_ptr<FileLogger> file_logger;
+        static std::unique_ptr<AsyncLogger> async_logger;
+        static std::unique_ptr<ConsoleLogger> console_logger;
+        static FileLogger* file_logger_ptr = nullptr;
+
+        if (!log_file.empty()) {
+            std::cout << "Logging to: " << log_file << "\n";
+            file_logger = std::make_unique<FileLogger>(log_file, true);
+            file_logger_ptr = file_logger.get();  // Save pointer before moving
+            async_logger = std::make_unique<AsyncLogger>(std::move(file_logger));
+            Logger::setGlobalLogger(async_logger.get());
+        } else {
+            std::cout << "Logging to: console\n";
+            console_logger = std::make_unique<ConsoleLogger>();
+            Logger::setGlobalLogger(console_logger.get());
+        }
 
         // Initialize job server
         job_server = std::make_unique<Server>();
@@ -58,11 +80,27 @@ int main(int argc, char** argv) {
         sigemptyset(&set);
         sigaddset(&set, SIGINT);
         sigaddset(&set, SIGTERM);
+        if (file_logger_ptr) {
+            sigaddset(&set, SIGHUP);  // Only handle SIGHUP if file logging
+        }
         pthread_sigmask(SIG_BLOCK, &set, nullptr);
         std::thread([&]() {
             int sig = 0;
-            if (sigwait(&set, &sig) == 0) {
-                if (job_server) job_server->stop();
+            while (true) {
+                if (sigwait(&set, &sig) == 0) {
+                    switch (sig) {
+                        case SIGINT:
+                        case SIGTERM:
+                            if (job_server) job_server->stop();
+                            return;
+                        case SIGHUP:
+                            if (file_logger_ptr) {
+                                file_logger_ptr->reopen();
+                                std::cout << "Log file reopened (SIGHUP received)\n";
+                            }
+                            break;
+                    }
+                }
             }
         }).detach();
 

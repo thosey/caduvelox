@@ -80,6 +80,8 @@ set(TEST_SOURCES
     util/ring_buffer/notifying_ring_buffer_test.cpp
     # Router Unit Tests (architecture-agnostic)
     http_router_unit_test.cpp
+    # Logger Tests (file logging and rotation)
+    logger_test.cpp
     # Job-Based Architecture Tests (primary architecture)
     job_http_server_test.cpp
     job_http_pipelining_test.cpp

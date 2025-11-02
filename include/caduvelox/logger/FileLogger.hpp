@@ -26,10 +26,14 @@ class FileLogger : public Logger {
 
     // Manually flush the log file
     void flush();
+    
+    // Reopen the log file (for log rotation via SIGHUP)
+    void reopen();
 
   private:
     std::ofstream file_;
     bool auto_flush_;
+    std::string filepath_;
 };
 
 } // namespace caduvelox

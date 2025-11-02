@@ -6,7 +6,7 @@
 namespace caduvelox {
 
 FileLogger::FileLogger(const std::string& filepath, bool auto_flush)
-    : auto_flush_(auto_flush) {
+    : auto_flush_(auto_flush), filepath_(filepath) {
     file_.open(filepath, std::ios::app);
     if (!file_.is_open()) {
         std::cerr << "FileLogger: Failed to open log file: " << filepath << std::endl;
@@ -58,6 +58,18 @@ void FileLogger::logError(std::string_view msg) {
 void FileLogger::flush() {
     if (file_.is_open()) {
         file_.flush();
+    }
+}
+
+void FileLogger::reopen() {
+    if (file_.is_open()) {
+        file_.close();
+    }
+    file_.open(filepath_, std::ios::app);
+    if (file_.is_open()) {
+        logMessage("Log file reopened (SIGHUP received)");
+    } else {
+        std::cerr << "FileLogger: Failed to reopen log file: " << filepath_ << std::endl;
     }
 }
 
