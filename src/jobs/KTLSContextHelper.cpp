@@ -76,7 +76,7 @@ bool KTLSContextHelper::loadCertificates(SSL_CTX* ctx, const std::string& cert_p
     bool cert_loaded = false;
     for (const auto& p : cert_candidates) {
         if (fs::exists(p)) {
-            if (SSL_CTX_use_certificate_file(ctx, p.string().c_str(), SSL_FILETYPE_PEM) == 1) {
+            if (SSL_CTX_use_certificate_chain_file(ctx, p.string().c_str()) == 1) {
                 cert_loaded = true;
                 break;
             } else {
