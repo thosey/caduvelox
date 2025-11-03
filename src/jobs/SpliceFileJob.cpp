@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <algorithm>
+#include <errno.h>
 
 // Define lock-free pool for SpliceFileJob
 // Medium pool since splice operations are used for zero-copy file transfers
@@ -99,6 +100,15 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
         pending_operations_--;
         
         if (result < 0) {
+            // Handle EAGAIN/EWOULDBLOCK - socket buffer full, retry
+            if (-result == EAGAIN || -result == EWOULDBLOCK) {
+                Logger::getInstance().logMessage("SpliceFileJob: Got EAGAIN/EWOULDBLOCK, resubmitting operation");
+                pending_operations_++;  // Restore counter
+                // Resubmit the same operation
+                resubmit(server);
+                return std::nullopt; // Continue operation
+            }
+            
             Logger::getInstance().logError("SpliceFileJob: linked splice operation failed fd=" + 
                                          std::to_string(client_fd_) + ", error=" + std::to_string(-result));
             if (on_error_) {
