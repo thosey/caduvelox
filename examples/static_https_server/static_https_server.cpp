@@ -4,11 +4,15 @@
  * Demonstrates serving static files over HTTPS using the job-based
  * architecture with zero-copy operations.
  * 
- * Usage: ./static_https_server <document_root> [port] [log_file]
+ * Usage: ./static_https_server <document_root> [port] [log_file] [cert_path] [key_path]
  * 
  * Examples:
- *   ./static_https_server static_site 8443              # Console logging
- *   ./static_https_server /var/www 443 /var/log/app.log # File logging
+ *   ./static_https_server static_site 8443                      # Console logging, default certs
+ *   ./static_https_server /var/www 443 /var/log/app.log         # File logging, default certs
+ *   ./static_https_server /var/www 443 "" cert.pem key.pem      # Custom certs, console logging
+ *   ./static_https_server /var/www 443 app.log cert.pem key.pem # Custom certs and log file
+ * 
+ * Certificate priority: command-line args > CERT_PATH/KEY_PATH env vars > test_cert.pem/test_key.pem
  * 
  * Features:
  * - HTTPS with KTLS support
@@ -45,6 +49,8 @@ int main(int argc, char** argv) {
         std::string docroot = argc > 1 ? argv[1] : "static_site";
         int port = argc > 2 ? std::stoi(argv[2]) : 8443;
         std::string log_file = argc > 3 ? argv[3] : "";
+        std::string cert_arg = argc > 4 ? argv[4] : "";
+        std::string key_arg = argc > 5 ? argv[5] : "";
 
         std::cout << "Starting static HTTPS server (job-based)\n";
         std::cout << "Document root: " << docroot << "\n";
@@ -107,11 +113,17 @@ int main(int argc, char** argv) {
         // Initialize HTTPS server
         https_server = std::make_unique<HttpServer>(*job_server);
         
-        // Set up HTTPS with certificates
-        const char* cert_env = std::getenv("CERT_PATH");
-        const char* key_env = std::getenv("KEY_PATH");
-        std::string cert_path = cert_env ? cert_env : "test_cert.pem";
-        std::string key_path = key_env ? key_env : "test_key.pem";
+        // Set up HTTPS with certificates (priority: args > env vars > defaults)
+        std::string cert_path, key_path;
+        if (!cert_arg.empty() && !key_arg.empty()) {
+            cert_path = cert_arg;
+            key_path = key_arg;
+        } else {
+            const char* cert_env = std::getenv("CERT_PATH");
+            const char* key_env = std::getenv("KEY_PATH");
+            cert_path = cert_env ? cert_env : "test_cert.pem";
+            key_path = key_env ? key_env : "test_key.pem";
+        }
         
         
         if (!https_server->listenKTLS(port, cert_path, key_path)) {
