@@ -90,18 +90,32 @@ int main(int argc, char** argv) {
             sigaddset(&set, SIGHUP);  // Only handle SIGHUP if file logging
         }
         pthread_sigmask(SIG_BLOCK, &set, nullptr);
+        
         std::thread([&]() {
             int sig = 0;
             while (true) {
                 if (sigwait(&set, &sig) == 0) {
                     switch (sig) {
                         case SIGINT:
+                            std::cout << "Received SIGINT, shutting down gracefully\n";
+                            // Log to file (bypass async for immediate flush)
+                            if (file_logger) {
+                                file_logger->logMessage("Received SIGINT, shutting down gracefully");
+                            }
+                            if (job_server) job_server->stop();
+                            return;
                         case SIGTERM:
+                            std::cout << "Received SIGTERM, shutting down gracefully\n";
+                            // Log to file (bypass async for immediate flush)
+                            if (file_logger) {
+                                file_logger->logMessage("Received SIGTERM, shutting down gracefully");
+                            }
                             if (job_server) job_server->stop();
                             return;
                         case SIGHUP:
-                            if (file_logger_ptr) {
-                                file_logger_ptr->reopen();
+                            if (file_logger) {
+                                file_logger->logMessage("Received SIGHUP, reopening log file");
+                                file_logger->reopen();
                                 std::cout << "Log file reopened (SIGHUP received)\n";
                             }
                             break;
@@ -188,24 +202,35 @@ int main(int argc, char** argv) {
 
         std::cout << "Listening on https://0.0.0.0:" << port << " (KTLS enabled)\n";
         std::cout << "Press Ctrl+C to stop\n";
+        Logger::getInstance().logMessage("Server startup complete, listening on port " + std::to_string(port));
+        
         // Run the server in a separate thread so we can handle signals cleanly
         std::thread server_thread([&]() {
+            Logger::getInstance().logMessage("Server event loop starting");
             job_server->run();
+            Logger::getInstance().logMessage("Server event loop exited");
         });
         // Wait for server thread to finish (sigwait thread triggers stop())
         if (server_thread.joinable()) {
             server_thread.join();
         }
 
+        Logger::getInstance().logMessage("Beginning cleanup");
         // Clean up explicitly after the server stops
         if (https_server) https_server.reset();
         if (job_server) job_server.reset();
 
         std::cout << "Shutdown complete" << std::endl;
+        Logger::getInstance().logMessage("Shutdown complete");
         
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
+        Logger::getInstance().logError("Fatal error: " + std::string(e.what()));
+        return 1;
+    } catch (...) {
+        std::cerr << "Unknown fatal error occurred" << std::endl;
+        Logger::getInstance().logError("Unknown fatal error occurred");
         return 1;
     }
 }
