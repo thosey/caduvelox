@@ -49,7 +49,7 @@ make -j$(nproc)<br>
 # Run the static HTTPS server demo<br>
 cd ../examples/static_https_server/build<br>
 cmake .. && make<br>
-./static_https_server
+./static_https_server ../static_site 8443  # Add: [log_file] [cert.pem] [key.pem]
             </div>
             <p class="note">📝 <strong>Note:</strong> Requires Linux 5.11+ with io_uring support and OpenSSL 3.0+ for kTLS.</p>
         </div>
@@ -143,8 +143,6 @@ server.addRoute("POST", "/api/data", [](auto& req, auto& res) {<br>
                     <p class="job-note">Multi-shot operations automatically rearm for maximum efficiency. Combine these building blocks or create your own Job types to build exactly what you need.</p>
                 </div>
             </div>
-            
-            <p class="api-note">💡 <strong>This site is an example!</strong> The static HTTPS server demonstrates the high-level HTTP API with zero-copy file serving. Check the examples folder for more use cases.</p>
         </div>
 
         <div class="footer">
