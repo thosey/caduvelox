@@ -57,23 +57,23 @@ cmake .. && make<br>
 
         <div class="features">
             <div class="feature">
-                <h3>⚡ io_uring</h3>
-                <p>Async I/O with Linux's fastest interface. Zero syscalls per request in steady state.</p>
+                <h3>⭕ io_uring</h3>
+                <p>Async I/O with Linux's fastest interface. Batched syscalls with efficient completion polling.</p>
             </div>
             
             <div class="feature">
                 <h3>🔐 Kernel TLS</h3>
-                <p>Hardware-accelerated encryption offloaded to the kernel for maximum throughput.</p>
+                <p>TLS encryption offloaded to the kernel, reducing userspace overhead and CPU usage.</p>
             </div>
             
             <div class="feature">
                 <h3>🔗 Zero-Copy</h3>
-                <p>Direct file→socket transfers via linked splice operations. No userspace buffers.</p>
+                <p>Direct file→socket transfers via linked splice operations.</p>
             </div>
             
             <div class="feature">
-                <h3>🎯 Job-Based</h3>
-                <p>Efficient task scheduling with worker pools and lock-free coordination.</p>
+                <h3>⚙️ Job-Based</h3>
+                <p>Composable task primitives that chain together for complex workflows. Build custom protocols from reusable building blocks.</p>
             </div>
         </div>
 
@@ -148,7 +148,7 @@ server.addRoute("POST", "/api/data", [](auto& req, auto& res) {<br>
         </div>
 
         <div class="footer">
-            <p>Built with C++20 • io_uring • kTLS • OpenSSL</p>
+            <p>This site is served using Caduvelox</p>
             <p><a href="https://github.com/thosey/caduvelox" target="_blank">github.com/thosey/caduvelox</a></p>
         </div>
     </div>
