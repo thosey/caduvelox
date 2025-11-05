@@ -93,12 +93,14 @@ bool KTLSJob::initializeSSL() {
     logger_.logMessage("KTLSJob: Enabled SSL_OP_ENABLE_KTLS for automatic kTLS support");
 
     // Set the socket file descriptor
+    logger_.logMessage("KTLSJob: Setting SSL fd=" + std::to_string(client_fd_));
     if (!SSL_set_fd(ssl_, client_fd_)) {
-        logger_.logError("KTLSJob: Failed to set SSL file descriptor");
+        logger_.logError("KTLSJob: Failed to set SSL file descriptor for fd=" + std::to_string(client_fd_));
         SSL_free(ssl_);
         ssl_ = nullptr;
         return false;
     }
+    logger_.logMessage("KTLSJob: SSL fd set successfully, ssl_initialized=true");
 
     ssl_initialized_ = true;
     return true;
