@@ -1,0 +1,35 @@
+[Unit]
+Description=Caduvelox HTTPS Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/path/to/caduvelox/examples/static_https_server
+Environment="CERT_PATH=/path/to/fullchain.pem"
+Environment="KEY_PATH=/path/to/privkey.pem"
+ExecStart=/path/to/caduvelox/examples/static_https_server/build/static_https_server ./static_site 443 /var/log/caduvelox.log
+
+# Auto-restart configuration
+Restart=always
+RestartSec=5s
+
+# Limit restart rate (10 restarts in 5 minutes, then give up temporarily)
+StartLimitInterval=300
+StartLimitBurst=10
+
+# Resource limits
+LimitNOFILE=65536
+LimitCORE=infinity
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=caduvelox
+
+# Security hardening (optional, remove if causing issues)
+# NoNewPrivileges=true
+# PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

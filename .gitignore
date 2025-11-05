@@ -9,6 +9,9 @@ server_tests
 http_server
 tls_server
 
+# Deployment configs with sensitive paths
+caduvelox.service
+
 *.pem
 # Object files
 *.o
