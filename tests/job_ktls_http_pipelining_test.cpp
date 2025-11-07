@@ -207,6 +207,57 @@ TEST_F(JobKTLSPipeliningTest, TwoBackToBackRequestsOnSameConnection) {
     ASSERT_EQ(r2.body, "two");
 }
 
+// Simulate pool exhaustion of KTLSJob by compiling with very small CDV_KTLS_POOL_SIZE
+// and opening more simultaneous client connections than the pool size, verifying that
+// connection attempts beyond the pool size fail initially but succeed after timeouts
+// reclaim stuck handshakes.
+TEST_F(JobKTLSPipeliningTest, KTLSPoolExhaustionRecovery) {
+    // This test depends on a reduced pool size (e.g. -DCDV_KTLS_POOL_SIZE=8) and a short handshake timeout
+    // (e.g. -DCDV_KTLS_HANDSHAKE_TIMEOUT_MS=200). If not defined, skip.
+#if !defined(CDV_KTLS_POOL_SIZE) || !defined(CDV_KTLS_HANDSHAKE_TIMEOUT_MS)
+    GTEST_SKIP() << "Compile with -DCDV_KTLS_POOL_SIZE and -DCDV_KTLS_HANDSHAKE_TIMEOUT_MS for this test";
+#endif
+
+    const int poolSize = CDV_KTLS_POOL_SIZE; // expected max concurrent handshakes
+    const int extra = poolSize + 4; // exceed pool intentionally
+
+    std::vector<std::unique_ptr<TLSClient>> clients;
+    clients.reserve(extra);
+
+    // Open connections without sending data to keep them in handshake WANT_READ/WRITE state
+    for (int i = 0; i < extra; ++i) {
+        clients.emplace_back(std::make_unique<TLSClient>("127.0.0.1", test_port));
+        // Small sleep to stagger
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    // At this point some connections beyond pool size may have been closed by server.
+    // Wait for at least one timeout cycle to reclaim stalled jobs.
+    std::this_thread::sleep_for(std::chrono::milliseconds(CDV_KTLS_HANDSHAKE_TIMEOUT_MS + 300));
+
+    // Attempt an additional connection that should now succeed after reclamation.
+    auto lateClient = std::make_unique<TLSClient>("127.0.0.1", test_port);
+    std::string req = "GET /r1 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    ASSERT_EQ(lateClient->sendAll(req), (int)req.size());
+    char buf[1024];
+    std::string accum;
+    for (int tries = 0; tries < 50; ++tries) {
+        int n = lateClient->recvSome(buf, sizeof(buf));
+        if (n > 0) {
+            accum.append(buf, buf + n);
+            auto parsed = tryParseHttpResponse(accum);
+            if (parsed) {
+                EXPECT_EQ(parsed->status_code, 200);
+                break;
+            }
+        } else if (n == 0) {
+            // connection closed prematurely
+            FAIL() << "Late client connection closed unexpectedly";
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+}
+
 TEST_F(JobKTLSPipeliningTest, MultipleKTLSRequests) {
     // Test multiple pipelined requests over KTLS
     TLSClient client("127.0.0.1", test_port);

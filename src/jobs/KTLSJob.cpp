@@ -8,8 +8,11 @@
 #include <cstring>
 
 // Define lock-free pool for KTLSJob
-// Medium pool since KTLS operations are used for secure connections
-DEFINE_LOCKFREE_POOL(caduvelox::KTLSJob, 1000);
+// Size can be overridden at compile time via -DCDV_KTLS_POOL_SIZE=<n>
+#ifndef CDV_KTLS_POOL_SIZE
+#define CDV_KTLS_POOL_SIZE 1000
+#endif
+DEFINE_LOCKFREE_POOL(caduvelox::KTLSJob, CDV_KTLS_POOL_SIZE);
 
 namespace {
     void cleanupKTLSJob(caduvelox::IoJob* job) {
@@ -188,16 +191,44 @@ bool KTLSJob::enableKTLS() {
 }
 
 void KTLSJob::submitPollOperation(Server& server, short events) {
+    // Add a poll request linked with a timeout to prevent handshake hangs from
+    // exhausting the KTLSJob pool. If the peer never progresses the TLS
+    // handshake, the link timeout will fire and we'll error out, returning
+    // this job to the pool.
+
+    // Default 5000ms; overridable via -DCDV_KTLS_HANDSHAKE_TIMEOUT_MS
+#ifndef CDV_KTLS_HANDSHAKE_TIMEOUT_MS
+#define CDV_KTLS_HANDSHAKE_TIMEOUT_MS 5000
+#endif
+    constexpr unsigned HANDSHAKE_TIMEOUT_MS = CDV_KTLS_HANDSHAKE_TIMEOUT_MS; // per step
+
     struct io_uring_sqe* sqe = server.registerJob(this);
-    if (sqe) {
-        io_uring_prep_poll_add(sqe, client_fd_, events);
-        server.submit();
-    } else {
+    if (!sqe) {
         state_ = State::ERROR_STATE;
         if (on_error_) {
             on_error_(client_fd_, -ENOMEM);
         }
+        return;
     }
+
+    // Prepare the poll with a linked timeout
+    io_uring_prep_poll_add(sqe, client_fd_, events);
+    sqe->flags |= IOSQE_IO_LINK; // next SQE is a linked timeout
+
+    // Prepare the link timeout SQE
+    struct io_uring_sqe* tsqe = server.registerJob(this);
+    if (!tsqe) {
+        // If we cannot enqueue the timeout, still submit the poll to avoid stalling
+        server.submit();
+        return;
+    }
+
+    __kernel_timespec ts{};
+    ts.tv_sec = HANDSHAKE_TIMEOUT_MS / 1000;
+    ts.tv_nsec = (HANDSHAKE_TIMEOUT_MS % 1000) * 1000000ULL;
+    io_uring_prep_link_timeout(tsqe, &ts, 0);
+
+    server.submit();
 }
 
 void KTLSJob::prepareSqe(struct io_uring_sqe* sqe) {
@@ -232,11 +263,11 @@ void KTLSJob::prepareSqe(struct io_uring_sqe* sqe) {
 
     switch (ssl_error) {
     case SSL_ERROR_WANT_READ:
-        io_uring_prep_poll_add(sqe, client_fd_, POLLIN);
-        break;
-
     case SSL_ERROR_WANT_WRITE:
-        io_uring_prep_poll_add(sqe, client_fd_, POLLOUT);
+        // Defer to performHandshakeStep() which will post poll with a
+        // linked timeout using submitPollOperation(). We prepare a NOP
+        // here to get an immediate completion and drive the state machine.
+        io_uring_prep_nop(sqe);
         break;
 
     default:
@@ -263,9 +294,18 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
 
     // We're in HANDSHAKING state
     if (cqe->res < 0) {
+            // -ECANCELED indicates the linked timeout was canceled because the poll
+            // completed normally earlier. We ignore these and continue.
+            if (cqe->res == -ECANCELED) {
+                return std::nullopt; // nothing to do; state machine continues
+            }
+
         logger_.logError("KTLSJob: Poll operation failed for fd=" + std::to_string(client_fd_) + 
                         ", error: " + std::string(strerror(-cqe->res)));
-        state_ = State::ERROR_STATE;
+            logger_.logError("KTLSJob: Poll/timeout failure for fd=" + std::to_string(client_fd_) +
+                             ", error: " + std::string(strerror(-cqe->res)) +
+                             (cqe->res == -ETIME ? " (handshake step timed out)" : ""));
+            state_ = State::ERROR_STATE;
         if (on_error_) {
             on_error_(client_fd_, cqe->res);
         }

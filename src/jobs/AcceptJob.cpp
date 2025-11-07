@@ -5,9 +5,12 @@
 #include <liburing.h>
 #include <sys/socket.h>
 
-// Define lock-free pool for AcceptJob at global scope
-// Small pool since usually only 1-2 active accept jobs per listening socket
-DEFINE_LOCKFREE_POOL(caduvelox::AcceptJob, 100);
+// Define lock-free pool for AcceptJob at global scope (overridable size)
+// Small default since usually only 1-2 active accept jobs per listening socket
+#ifndef CDV_ACCEPT_POOL_SIZE
+#define CDV_ACCEPT_POOL_SIZE 100
+#endif
+DEFINE_LOCKFREE_POOL(caduvelox::AcceptJob, CDV_ACCEPT_POOL_SIZE);
 
 namespace caduvelox {
 

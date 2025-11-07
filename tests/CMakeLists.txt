@@ -95,6 +95,14 @@ set(TEST_SOURCES
 add_executable(caduvelox_tests ${TEST_SOURCES})
 add_dependencies(caduvelox_tests generate_test_cert_key)
 
+# Allow overriding pool sizes and handshake timeout for stress tests.
+# These can be passed from command line: -DCDV_KTLS_POOL_SIZE=16 etc.
+target_compile_definitions(caduvelox_tests PRIVATE
+    $<$<BOOL:${CDV_KTLS_POOL_SIZE}>:CDV_KTLS_POOL_SIZE=${CDV_KTLS_POOL_SIZE}>
+    $<$<BOOL:${CDV_ACCEPT_POOL_SIZE}>:CDV_ACCEPT_POOL_SIZE=${CDV_ACCEPT_POOL_SIZE}>
+    $<$<BOOL:${CDV_KTLS_HANDSHAKE_TIMEOUT_MS}>:CDV_KTLS_HANDSHAKE_TIMEOUT_MS=${CDV_KTLS_HANDSHAKE_TIMEOUT_MS}>
+)
+
 # Create test executable for HTTP server
 #add_executable(http_server_tests
 #    http_server_test.cpp
@@ -119,6 +127,12 @@ target_link_libraries(caduvelox_tests
 
 # Add compiler flags
 target_compile_options(caduvelox_tests PRIVATE ${LIBURING_CFLAGS})
+# Propagate test-specific pool size/timeout overrides to library too
+target_compile_definitions(caduvelox PUBLIC
+    $<$<BOOL:${CDV_KTLS_POOL_SIZE}>:CDV_KTLS_POOL_SIZE=${CDV_KTLS_POOL_SIZE}>
+    $<$<BOOL:${CDV_ACCEPT_POOL_SIZE}>:CDV_ACCEPT_POOL_SIZE=${CDV_ACCEPT_POOL_SIZE}>
+    $<$<BOOL:${CDV_KTLS_HANDSHAKE_TIMEOUT_MS}>:CDV_KTLS_HANDSHAKE_TIMEOUT_MS=${CDV_KTLS_HANDSHAKE_TIMEOUT_MS}>
+)
 #target_compile_options(http_server_tests PRIVATE ${LIBURING_CFLAGS})
 
 # Enable testing
