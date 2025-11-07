@@ -13,6 +13,17 @@
 #include <cstring>
 #include <algorithm>
 
+// Provide sane defaults if pool/timeout macros not passed in build.
+#ifndef CDV_KTLS_POOL_SIZE
+#define CDV_KTLS_POOL_SIZE 1000
+#endif
+#ifndef CDV_ACCEPT_POOL_SIZE
+#define CDV_ACCEPT_POOL_SIZE 100
+#endif
+#ifndef CDV_KTLS_HANDSHAKE_TIMEOUT_MS
+#define CDV_KTLS_HANDSHAKE_TIMEOUT_MS 5000
+#endif
+
 namespace {
 
 struct ParsedResponse {
