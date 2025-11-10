@@ -72,9 +72,18 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
     // Successfully accepted a connection
     int client_fd = result;
     
-    if (on_connection_) {
-        // For now, pass null addr info - could be enhanced to capture client address
-        on_connection_(client_fd, nullptr, 0);
+    // Get client address information
+    sockaddr_storage client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    if (getpeername(client_fd, (sockaddr*)&client_addr, &addr_len) == 0) {
+        if (on_connection_) {
+            on_connection_(client_fd, (const sockaddr*)&client_addr, addr_len);
+        }
+    } else {
+        // If getpeername fails, still call callback with null addr
+        if (on_connection_) {
+            on_connection_(client_fd, nullptr, 0);
+        }
     }
     
     // Check if multishot is continuing - if IORING_CQE_F_MORE is NOT set,

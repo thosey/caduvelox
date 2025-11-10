@@ -182,7 +182,7 @@ void HttpServer::startAccepting() {
     auto accept_job = AcceptJob::create(
         server_fd_,
         [this](int client_fd, const sockaddr* addr, socklen_t addrlen) {
-            handleNewConnection(client_fd);
+            handleNewConnection(client_fd, addr, addrlen);
         },
         [this](int error) {
             Logger::getInstance().logError("HttpServer: Accept error: " + std::to_string(error));
@@ -212,8 +212,30 @@ void HttpServer::startAccepting() {
     }
 }
 
-void HttpServer::handleNewConnection(int client_fd) {
-    Logger::getInstance().logMessage("HttpServer: New connection fd=" + std::to_string(client_fd));
+void HttpServer::handleNewConnection(int client_fd, const sockaddr* addr, socklen_t addrlen) {
+    // Log connection with [ACCESS] prefix for easy filtering
+    std::string access_log = "[ACCESS] CONNECT fd=" + std::to_string(client_fd);
+    
+    if (addr) {
+        char ip_str[INET6_ADDRSTRLEN];
+        int port = 0;
+        
+        if (addr->sa_family == AF_INET) {
+            auto* addr4 = (const sockaddr_in*)addr;
+            inet_ntop(AF_INET, &addr4->sin_addr, ip_str, sizeof(ip_str));
+            port = ntohs(addr4->sin_port);
+        } else if (addr->sa_family == AF_INET6) {
+            auto* addr6 = (const sockaddr_in6*)addr;
+            inet_ntop(AF_INET6, &addr6->sin6_addr, ip_str, sizeof(ip_str));
+            port = ntohs(addr6->sin6_port);
+        } else {
+            strcpy(ip_str, "unknown");
+        }
+        
+        access_log += " from " + std::string(ip_str) + ":" + std::to_string(port);
+    }
+    
+    Logger::getInstance().logMessage(access_log);
     
     if (ktls_enabled_) {
         // Start KTLS handshake for this connection
@@ -748,7 +770,7 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
 
 void HttpConnectionJob::closeConnection() {
     if (client_fd_ >= 0) {
-        Logger::getInstance().logMessage("HttpConnectionJob: Closing connection fd=" + std::to_string(client_fd_));
+        Logger::getInstance().logMessage("[ACCESS] DISCONNECT fd=" + std::to_string(client_fd_));
         close(client_fd_);
         client_fd_ = -1;
     }

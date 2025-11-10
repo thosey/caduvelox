@@ -111,7 +111,7 @@ private:
     /**
      * Handle new connection from AcceptJob
      */
-    void handleNewConnection(int client_fd);
+    void handleNewConnection(int client_fd, const sockaddr* addr = nullptr, socklen_t addrlen = 0);
 
     /**
      * Handle completed KTLS handshake
