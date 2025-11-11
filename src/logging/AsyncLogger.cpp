@@ -39,11 +39,19 @@ class AsyncLogger::Impl {
           fWorkerThread(&Impl::workerThreadFunc, this) {}
 
     ~Impl() {
-        fRunning = false;
-        fRingBuffer.shutdown(); // Wake the worker thread for clean shutdown
+        // Signal shutdown first
+        fRunning.store(false, std::memory_order_release);
+        
+        // Wake the worker thread so it can see fRunning == false
+        fRingBuffer.shutdown();
+        
+        // Wait for worker thread to FULLY exit before destroying anything else
         if (fWorkerThread.joinable()) {
             fWorkerThread.join();
         }
+        
+        // Worker thread has now exited workerThreadFunc() and is fully terminated
+        // Safe to destroy fRingBuffer and fDelegate (happens automatically)
     }
 
     void logMessage(std::string_view msg) { enqueueLogMessage(LogLevel::MESSAGE, msg); }
@@ -52,10 +60,21 @@ class AsyncLogger::Impl {
 
   private:
     void enqueueLogMessage(LogLevel level, std::string_view msg) {
+        // Check if we're shutting down - don't attempt fallback logging
+        if (!fRunning.load(std::memory_order_acquire)) {
+            // During shutdown, drop the message to avoid use-after-free
+            return;
+        }
+        
         LogMessage logMsg(level, msg);
 
         if (!fRingBuffer.enqueue(std::move(logMsg))) {
             // Buffer full - fallback to synchronous logging with warning prefix
+            // Check again if still running (could have shut down between checks)
+            if (!fRunning.load(std::memory_order_acquire)) {
+                return; // Shutdown in progress, drop message
+            }
+            
             std::string fallbackMsg = "[ASYNC_BUFFER_FULL] ";
             fallbackMsg += msg;
             
