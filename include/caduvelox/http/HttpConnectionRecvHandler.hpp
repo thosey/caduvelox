@@ -11,10 +11,10 @@ class AffinityWorkerPool;
 
 /**
  * Handler for HttpConnectionJob multishot recv operations with affinity workers
- * Encapsulates context and callback logic (zero-cost abstraction)
+ * Uses weak_ptr to safely handle connection lifetime across worker threads
  */
 struct HttpConnectionRecvHandler {
-    HttpConnectionJob* connection;
+    std::weak_ptr<HttpConnectionJob> connection;
     
     // Error handling
     void onError(int error);

@@ -19,6 +19,7 @@
 #include <openssl/ssl.h>
 #include <memory>
 #include <unordered_map>
+#include <mutex>
 #include <string>
 
 namespace caduvelox {
@@ -88,6 +89,16 @@ public:
      * Signal that a worker has posted a response
      */
     void signalWorkerResponse();
+    
+    /**
+     * Get shared_ptr for a connection (for weak_ptr lifetime management)
+     */
+    std::shared_ptr<HttpConnectionJob> getConnection(int fd);
+    
+    /**
+     * Remove connection from active map (called on close)
+     */
+    void removeConnection(int fd);
 
 private:
     Server& job_server_;
@@ -102,6 +113,10 @@ private:
     SPSCQueue<WorkerResponse> response_queue_;  // Worker threads -> io_uring thread
     std::unique_ptr<EventFd> worker_event_fd_;  // For waking up io_uring thread
     EventFdMonitorJob* eventfd_monitor_job_ = nullptr; // Pool-allocated job to monitor eventfd
+
+    // Active connection tracking (for shared_ptr lifetime management)
+    std::unordered_map<int, std::shared_ptr<HttpConnectionJob>> active_connections_;
+    std::mutex connections_mutex_;
 
     /**
      * Start accepting connections
