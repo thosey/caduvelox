@@ -702,6 +702,14 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         // This is a file serving request - use HTTPFileJob for zero-copy transfer
         Logger::getInstance().logMessage("HttpConnectionJob: Using HTTPFileJob for file: " + response.file_path);
         
+        // Get weak_ptr to self for safe callback handling
+        auto self_shared = http_server_->getConnection(client_fd_);
+        if (!self_shared) {
+            Logger::getInstance().logError("HttpConnectionJob: Connection closed before file transfer, cannot send response");
+            return;
+        }
+        std::weak_ptr<HttpConnectionJob> self_weak(self_shared);
+        
         HttpResponse response_copy = response;
         // Use per-connection keep_alive_ flag (not response header)
         // This is set based on HTTP/1.1 Connection header from the REQUEST
@@ -710,24 +718,35 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         }
 
         std::string file_path = response.file_path;
+        bool keep_alive_copy = keep_alive_;
 
         auto http_file_job = HTTPFileJob::createFromPool(
             client_fd_,
             file_path,
             std::move(response_copy), // Pass the response for any custom headers
-            [this, keep_alive = keep_alive_](int fd, size_t bytes_sent) {
+            [self_weak, keep_alive_copy](int fd, size_t bytes_sent) {
+                auto conn = self_weak.lock();
+                if (!conn) {
+                    Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during file transfer completion");
+                    return;
+                }
                 Logger::getInstance().logMessage("HttpConnectionJob: File transfer complete fd=" + 
                                                std::to_string(fd) + ", bytes=" + std::to_string(bytes_sent));
-                if (keep_alive) {
-                    startReading();
+                if (keep_alive_copy) {
+                    conn->startReading();
                 } else {
-                    closeConnection();
+                    conn->closeConnection();
                 }
             },
-            [this](int fd, int error) {
+            [self_weak](int fd, int error) {
+                auto conn = self_weak.lock();
+                if (!conn) {
+                    Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during file transfer error");
+                    return;
+                }
                 Logger::getInstance().logError("HttpConnectionJob: File transfer error fd=" + 
                                              std::to_string(fd) + ", error=" + std::to_string(error));
-                closeConnection();
+                conn->closeConnection();
             }
         );
         
