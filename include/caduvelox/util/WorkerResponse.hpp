@@ -8,22 +8,22 @@ namespace caduvelox {
 /**
  * Message from worker thread to io_uring thread requesting a response be sent
  * 
- * Uses raw pointer pattern - connection validity checked via client_fd >= 0
+ * Uses weak_ptr to safely handle connection lifetime across worker threads
  * If connection closes before response is processed, sendResponse will no-op safely
  */
 struct WorkerResponse {
     int client_fd;                          // File descriptor to send response to
     HttpResponse response;                  // The response to send
     bool keep_alive;                        // Whether to keep connection alive
-    class HttpConnectionJob* connection_job;  // Raw pointer to connection (validity checked in sendResponse)
+    std::weak_ptr<class HttpConnectionJob> connection_job;  // Safe pointer to connection
     
-    WorkerResponse() : client_fd(-1), keep_alive(false), connection_job(nullptr) {}
+    WorkerResponse() : client_fd(-1), keep_alive(false) {}
     
-    WorkerResponse(int fd, HttpResponse resp, bool ka, class HttpConnectionJob* job)
+    WorkerResponse(int fd, HttpResponse resp, bool ka, std::weak_ptr<class HttpConnectionJob> job)
         : client_fd(fd)
         , response(std::move(resp))
         , keep_alive(ka)
-        , connection_job(job)
+        , connection_job(std::move(job))
     {}
     
     // Movable

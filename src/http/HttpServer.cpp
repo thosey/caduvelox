@@ -672,8 +672,15 @@ void HttpConnectionJob::postResponseFromWorker(const HttpResponse& response) {
     Logger::getInstance().logMessage("HttpConnectionJob: Posting response from worker thread, status=" + 
                                    std::to_string(response.status_code));
     
-    // Create WorkerResponse and try to enqueue it (raw pointer pattern - zero allocation)
-    WorkerResponse wr(client_fd_, response, keep_alive_, this);
+    // Get weak_ptr to this connection for safe cross-thread messaging
+    auto self_shared = http_server_->getConnection(client_fd_);
+    if (!self_shared) {
+        Logger::getInstance().logError("HttpConnectionJob: Connection already closed, cannot post worker response");
+        return;
+    }
+    
+    // Create WorkerResponse with weak_ptr for safe lifetime management
+    WorkerResponse wr(client_fd_, response, keep_alive_, std::weak_ptr<HttpConnectionJob>(self_shared));
     
     if (!http_server_->getResponseQueue().try_push(std::move(wr))) {
         Logger::getInstance().logError("HttpConnectionJob: Worker response queue full! Dropping response for fd=" + 
@@ -921,15 +928,16 @@ void HttpServer::processWorkerResponses() {
     while (auto maybe_response = response_queue_.try_pop()) {
         WorkerResponse& wr = *maybe_response;
         
-        // Check if connection is still valid (client_fd >= 0)
-        if (!wr.connection_job || wr.connection_job->getClientFd() < 0) {
+        // Lock weak_ptr to check if connection is still alive
+        auto conn = wr.connection_job.lock();
+        if (!conn) {
             Logger::getInstance().logMessage("HttpServer: Connection already closed for fd=" + 
                                            std::to_string(wr.client_fd));
             continue;
         }
         
         // Send the response via the connection job
-        wr.connection_job->sendResponse(wr.response);
+        conn->sendResponse(wr.response);
         processed++;
     }
     
