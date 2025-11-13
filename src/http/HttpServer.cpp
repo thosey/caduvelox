@@ -450,19 +450,19 @@ void HttpConnectionJob::startReading() {
     reading_active_ = true;
     
     // Get shared_ptr from HttpServer's active connections map
-    std::shared_ptr<HttpConnectionJob> self_shared;
+    std::shared_ptr<HttpConnectionJob> connectionJob;
     if (http_server_) {
-        self_shared = http_server_->getConnection(client_fd_);
+        connectionJob = http_server_->getConnection(client_fd_);
     }
     
-    if (!self_shared) {
+    if (!connectionJob) {
         Logger::getInstance().logError("HttpConnectionJob: Cannot find self in active connections map");
         reading_active_ = false;
         return;
     }
     
     // Create handler with weak_ptr to safely handle async worker processing
-    HttpConnectionRecvHandler handler{std::weak_ptr<HttpConnectionJob>(self_shared)};
+    HttpConnectionRecvHandler handler{std::weak_ptr<HttpConnectionJob>(connectionJob)};
     
     // Check if we have affinity workers for zero-copy processing
     auto worker_pool = job_server_.getAffinityWorkerPool();
@@ -673,14 +673,14 @@ void HttpConnectionJob::postResponseFromWorker(const HttpResponse& response) {
                                    std::to_string(response.status_code));
     
     // Get weak_ptr to this connection for safe cross-thread messaging
-    auto self_shared = http_server_->getConnection(client_fd_);
-    if (!self_shared) {
+    auto connectionJob = http_server_->getConnection(client_fd_);
+    if (!connectionJob) {
         Logger::getInstance().logError("HttpConnectionJob: Connection already closed, cannot post worker response");
         return;
     }
     
     // Create WorkerResponse with weak_ptr for safe lifetime management
-    WorkerResponse wr(client_fd_, response, keep_alive_, std::weak_ptr<HttpConnectionJob>(self_shared));
+    WorkerResponse wr(client_fd_, response, keep_alive_, std::weak_ptr<HttpConnectionJob>(connectionJob));
     
     if (!http_server_->getResponseQueue().try_push(std::move(wr))) {
         Logger::getInstance().logError("HttpConnectionJob: Worker response queue full! Dropping response for fd=" + 
@@ -703,12 +703,12 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         Logger::getInstance().logMessage("HttpConnectionJob: Using HTTPFileJob for file: " + response.file_path);
         
         // Get weak_ptr to self for safe callback handling
-        auto self_shared = http_server_->getConnection(client_fd_);
-        if (!self_shared) {
+        auto connectionJob = http_server_->getConnection(client_fd_);
+        if (!connectionJob) {
             Logger::getInstance().logError("HttpConnectionJob: Connection closed before file transfer, cannot send response");
             return;
         }
-        std::weak_ptr<HttpConnectionJob> self_weak(self_shared);
+        std::weak_ptr<HttpConnectionJob> weakConnectionJob(connectionJob);
         
         HttpResponse response_copy = response;
         // Use per-connection keep_alive_ flag (not response header)
@@ -724,8 +724,8 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             client_fd_,
             file_path,
             std::move(response_copy), // Pass the response for any custom headers
-            [self_weak, keep_alive_copy](int fd, size_t bytes_sent) {
-                auto conn = self_weak.lock();
+            [weakConnectionJob, keep_alive_copy](int fd, size_t bytes_sent) {
+                auto conn = weakConnectionJob.lock();
                 if (!conn) {
                     Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during file transfer completion");
                     return;
@@ -738,8 +738,8 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
                     conn->closeConnection();
                 }
             },
-            [self_weak](int fd, int error) {
-                auto conn = self_weak.lock();
+            [weakConnectionJob](int fd, int error) {
+                auto conn = weakConnectionJob.lock();
                 if (!conn) {
                     Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during file transfer error");
                     return;
@@ -778,6 +778,15 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
     
     std::string response_str = oss.str();
     
+    // Get weak_ptr to self for safe callback handling
+    auto connectionJob = http_server_->getConnection(client_fd_);
+    if (!connectionJob) {
+        Logger::getInstance().logError("HttpConnectionJob: Connection closed before write, cannot send response");
+        return;
+    }
+    std::weak_ptr<HttpConnectionJob> weakConnectionJob(connectionJob);
+    bool keep_alive_copy = keep_alive_;
+    
     // Create owned data for WriteJob
     auto response_data = std::make_unique<char[]>(response_str.size());
     std::memcpy(response_data.get(), response_str.data(), response_str.size());
@@ -786,20 +795,30 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         client_fd_,
         std::move(response_data),
         response_str.size(),
-        [this](int fd, size_t bytes_written) {
+        [weakConnectionJob, keep_alive_copy](int fd, size_t bytes_written) {
+            auto conn = weakConnectionJob.lock();
+            if (!conn) {
+                Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during write completion");
+                return;
+            }
             Logger::getInstance().logMessage("HttpConnectionJob: Response sent fd=" + std::to_string(fd) + 
                                            ", bytes=" + std::to_string(bytes_written));
             // Check if we should keep the connection alive for more requests
-            if (keep_alive_) {
-                continueReading();
+            if (keep_alive_copy) {
+                conn->continueReading();
             } else {
-                closeConnection();
+                conn->closeConnection();
             }
         },
-        [this](int fd, int error) {
+        [weakConnectionJob](int fd, int error) {
+            auto conn = weakConnectionJob.lock();
+            if (!conn) {
+                Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during write error");
+                return;
+            }
             Logger::getInstance().logError("HttpConnectionJob: Write error fd=" + std::to_string(fd) + 
                                          ", error=" + std::to_string(error));
-            closeConnection();
+            conn->closeConnection();
         }
     );
 
