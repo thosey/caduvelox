@@ -15,8 +15,10 @@
 #include "caduvelox/util/SPSCQueue.hpp"
 #include "caduvelox/util/EventFd.hpp"
 #include "caduvelox/util/WorkerResponse.hpp"
+#include "caduvelox/util/JobStateMachine.hpp"
 #include "LockFreeMemoryPool.h"
 #include <openssl/ssl.h>
+#include <atomic>
 #include <memory>
 #include <unordered_map>
 #include <mutex>
@@ -154,36 +156,38 @@ private:
  * - Routes complete requests through HttpRouter
  * - Sends responses via WriteJob
  * - Handles connection cleanup
- * 
- * Note: This class uses shared_ptr for lifetime management due to complex async
- * operation dependencies. Pool factory exists but is currently unused.
- */
 /**
- * HTTP connection handler (pool-allocated)
+ * HTTP connection handler (pool-allocated with atomic state machine)
  * Manages HTTP request/response lifecycle for a single client connection
  * 
+ * Uses atomic JobState for lock-free lifetime management:
+ * - No heap allocations (truly lock-free!)
+ * - CAS guards prevent use-after-free
+ * - Deferred cleanup when worker is processing
  */
-class HttpConnectionJob : public IoJob, public std::enable_shared_from_this<HttpConnectionJob> {
+class HttpConnectionJob : public IoJob {
     // Allow HttpServer to call sendResponse for worker responses
     friend class HttpServer;
     
 public:
     /**
      * Create HTTP connection handler using lock-free pool allocation.
-     * Returns shared_ptr with custom deleter that returns object to pool.
-     * The object memory comes from the lock-free pool (zero malloc overhead),
-     * but the shared_ptr control block is heap-allocated (one malloc per connection).
-     * This gives us proper reference counting without the performance cost of
-     * allocating the object itself.
+     * Returns raw pointer to pool-allocated object with atomic state machine
+     * for lifetime management. Zero heap allocations - truly lock-free!
+     * 
+     * Lifetime is managed via atomic JobState transitions:
+     * - AVAILABLE: Ready for worker processing
+     * - WORKING: Worker is currently processing
+     * - DISCARDED: Connection closed, awaiting final cleanup
      * 
      * @param client_fd Client socket file descriptor
      * @param job_server Reference to the io_uring server
      * @param router HTTP router for request handling
      * @param http_server Pointer to HTTP server (for worker response queue)
      * @param max_request_size Maximum request size in bytes
-     * @return shared_ptr to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
+     * @return Raw pointer to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
      */
-    static std::shared_ptr<HttpConnectionJob> createFromPool(
+    static HttpConnectionJob* createFromPool(
         int client_fd, 
         Server& job_server,
         const HttpRouter& router,
@@ -210,6 +214,22 @@ public:
     void handleDataReceivedOnWorker(const char* data, ssize_t len);
     void handleReadError(int error);
     int getClientFd() const { return client_fd_; }
+    
+    /**
+     * Try to acquire job for worker processing
+     * @return true if successfully acquired (AVAILABLE -> WORKING), false if discarded
+     */
+    bool tryAcquire() {
+        return state_.tryAcquire();
+    }
+    
+    /**
+     * Release job after worker processing
+     * @return true if released normally, false if was discarded (caller should cleanup)
+     */
+    bool tryRelease() {
+        return state_.tryRelease();
+    }
 
 private:
 
@@ -221,6 +241,14 @@ private:
     void sendResponse(const HttpResponse& response);
     void closeConnection();
     bool shouldKeepAlive(const HttpRequest& request) const;
+    
+    /**
+     * Try to discard job (mark for cleanup)
+     * @return true if we should cleanup now, false if worker will cleanup
+     */
+    bool tryDiscard() {
+        return state_.tryDiscard();
+    }
     void continueReading();
 
     int client_fd_;
@@ -231,7 +259,9 @@ private:
     size_t max_request_size_;
     bool reading_active_;
     bool keep_alive_;  // Track if connection should remain open
-    std::shared_ptr<HttpConnectionJob> self_;  // Self-reference to keep alive during async ops
+    
+    // Atomic state machine for lock-free lifetime management
+    JobStateMachine state_;
 };
 
 } // namespace caduvelox

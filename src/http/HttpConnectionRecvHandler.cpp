@@ -6,30 +6,29 @@ namespace caduvelox {
 
 // Error handling
 void HttpConnectionRecvHandler::onError(int error) {
-    auto conn = connection.lock();
-    if (conn) {
-        conn->handleReadError(error);
+    // Raw pointer access - connection might be discarded
+    // handleReadError will check state if needed
+    if (connection) {
+        connection->handleReadError(error);
     }
-    // If connection expired, silently ignore - connection already closed
 }
 
 // Zero-copy token processing (with worker threads)
 void HttpConnectionRecvHandler::onDataToken(std::shared_ptr<ProvidedBufferToken> token, 
                                            void* worker_pool_ptr) {
-    // Lock weak_ptr to get shared_ptr - this keeps connection alive during worker processing
-    auto conn = connection.lock();
-    if (!conn) {
-        // Connection was closed before worker could process - discard token
+    // Check if connection is still valid
+    if (!connection) {
         return;
     }
     
     auto* worker_pool = static_cast<AffinityWorkerPool*>(worker_pool_ptr);
-    int connection_id = conn->getClientFd();
+    int connection_id = connection->getClientFd();
     
     // Post to worker thread with connection affinity
-    // Capture shared_ptr in lambda to keep connection alive until processing completes
-    worker_pool->post(connection_id, [conn, token]() {
-        conn->handleDataReceivedOnWorker(token->data(), token->size());
+    // Worker will use tryAcquire/tryRelease for safe access
+    HttpConnectionJob* conn_ptr = connection;
+    worker_pool->post(connection_id, [conn_ptr, token]() {
+        conn_ptr->handleDataReceivedOnWorker(token->data(), token->size());
     });
 }
 
