@@ -279,35 +279,22 @@ void HttpServer::handleNewConnection(int client_fd, const sockaddr* addr, sockle
 }
 
 void HttpServer::createConnectionHandler(int client_fd) {
-    auto* connection_job = HttpConnectionJob::createFromPool(client_fd, job_server_, router_, this);
+    // Create connection with shared_ptr from pool (custom deleter returns to pool)
+    auto connection_shared = HttpConnectionJob::createFromPool(client_fd, job_server_, router_, this);
     
-    if (!connection_job) {
+    if (!connection_shared) {
         Logger::getInstance().logError("HttpServer: Failed to allocate HttpConnectionJob from pool");
         close(client_fd);
         return;
     }
     
-    // Wrap in shared_ptr with custom deleter that returns to pool
-    // This allows weak_ptr in worker threads while maintaining pool allocation
-    auto connection_shared = std::shared_ptr<HttpConnectionJob>(
-        connection_job,
-        [](HttpConnectionJob* job) {
-            // Custom deleter: return to pool instead of delete
-            // Note: cleanup is handled by IoJob completion callback
-        }
-    );
+    // Start the connection job
+    // The connection keeps itself alive via self_ member until closeConnection() is called
+    // No mutex needed - each connection manages its own lifetime!
+    connection_shared->start();
     
-    // Store in active connections map so it stays alive
-    {
-        std::lock_guard<std::mutex> lock(connections_mutex_);
-        active_connections_[client_fd] = connection_shared;
-    }
-    
-    // Start the connection job - it will manage itself via cleanup callbacks
-    connection_job->start();
-    
-    // The HttpConnectionJob will stay alive until closeConnection() is called,
-    // at which point the cleanup callback returns it to the pool
+    // The HttpConnectionJob will stay alive via self-reference (self_ member)
+    // When closeConnection() clears self_, the custom deleter returns object to pool
 }
 
 void HttpServer::handleKTLSReady(int client_fd, SSL* ssl) {
@@ -391,7 +378,19 @@ int HttpServer::createServerSocket(int port, const std::string& bind_addr) {
 // HttpConnectionJob implementation
 // Pool-allocated only - managed via cleanup callbacks (no shared_ptr needed)
 
-HttpConnectionJob* HttpConnectionJob::createFromPool(
+// Custom deleter for shared_ptr that returns object to pool
+struct HttpConnectionJobPoolDeleter {
+    void operator()(HttpConnectionJob* ptr) const {
+        if (ptr) {
+            // Call destructor explicitly before returning to pool
+            ptr->~HttpConnectionJob();
+            // Return memory to pool
+            lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(ptr);
+        }
+    }
+};
+
+std::shared_ptr<HttpConnectionJob> HttpConnectionJob::createFromPool(
     int client_fd, 
     Server& job_server,
     const HttpRouter& router,
@@ -404,7 +403,10 @@ HttpConnectionJob* HttpConnectionJob::createFromPool(
         return nullptr; // Pool exhausted
     }
     
-    return job;
+    // Create shared_ptr with custom deleter that returns to pool
+    // The control block is allocated on the heap (one malloc per connection)
+    // but the object itself is from the pool (lock-free, no malloc)
+    return std::shared_ptr<HttpConnectionJob>(job, HttpConnectionJobPoolDeleter());
 }
 
 HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router, 
@@ -431,6 +433,9 @@ void HttpConnectionJob::prepareSqe(struct io_uring_sqe* sqe) {
 }
 
 void HttpConnectionJob::start() {
+    // Store shared_ptr to self to keep connection alive during async operations
+    // This replaces the need for a global active_connections_ map with mutex
+    self_ = shared_from_this();
     startReading();
 }
 
@@ -449,20 +454,11 @@ void HttpConnectionJob::startReading() {
 
     reading_active_ = true;
     
-    // Get shared_ptr from HttpServer's active connections map
-    std::shared_ptr<HttpConnectionJob> connectionJob;
-    if (http_server_) {
-        connectionJob = http_server_->getConnection(client_fd_);
-    }
-    
-    if (!connectionJob) {
-        Logger::getInstance().logError("HttpConnectionJob: Cannot find self in active connections map");
-        reading_active_ = false;
-        return;
-    }
+    // Get weak_ptr to self using shared_from_this() - no mutex needed!
+    std::weak_ptr<HttpConnectionJob> weakSelf = weak_from_this();
     
     // Create handler with weak_ptr to safely handle async worker processing
-    HttpConnectionRecvHandler handler{std::weak_ptr<HttpConnectionJob>(connectionJob)};
+    HttpConnectionRecvHandler handler{weakSelf};
     
     // Check if we have affinity workers for zero-copy processing
     auto worker_pool = job_server_.getAffinityWorkerPool();
@@ -672,15 +668,11 @@ void HttpConnectionJob::postResponseFromWorker(const HttpResponse& response) {
     Logger::getInstance().logMessage("HttpConnectionJob: Posting response from worker thread, status=" + 
                                    std::to_string(response.status_code));
     
-    // Get weak_ptr to this connection for safe cross-thread messaging
-    auto connectionJob = http_server_->getConnection(client_fd_);
-    if (!connectionJob) {
-        Logger::getInstance().logError("HttpConnectionJob: Connection already closed, cannot post worker response");
-        return;
-    }
+    // Get weak_ptr to self using shared_from_this() - no mutex needed!
+    std::weak_ptr<HttpConnectionJob> weakSelf = weak_from_this();
     
     // Create WorkerResponse with weak_ptr for safe lifetime management
-    WorkerResponse wr(client_fd_, response, keep_alive_, std::weak_ptr<HttpConnectionJob>(connectionJob));
+    WorkerResponse wr(client_fd_, response, keep_alive_, weakSelf);
     
     if (!http_server_->getResponseQueue().try_push(std::move(wr))) {
         Logger::getInstance().logError("HttpConnectionJob: Worker response queue full! Dropping response for fd=" + 
@@ -703,12 +695,8 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         Logger::getInstance().logMessage("HttpConnectionJob: Using HTTPFileJob for file: " + response.file_path);
         
         // Get weak_ptr to self for safe callback handling
-        auto connectionJob = http_server_->getConnection(client_fd_);
-        if (!connectionJob) {
-            Logger::getInstance().logError("HttpConnectionJob: Connection closed before file transfer, cannot send response");
-            return;
-        }
-        std::weak_ptr<HttpConnectionJob> weakConnectionJob(connectionJob);
+        // Get weak_ptr to self using shared_from_this() - no mutex needed!
+        std::weak_ptr<HttpConnectionJob> weakConnectionJob = weak_from_this();
         
         HttpResponse response_copy = response;
         // Use per-connection keep_alive_ flag (not response header)
@@ -778,13 +766,8 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
     
     std::string response_str = oss.str();
     
-    // Get weak_ptr to self for safe callback handling
-    auto connectionJob = http_server_->getConnection(client_fd_);
-    if (!connectionJob) {
-        Logger::getInstance().logError("HttpConnectionJob: Connection closed before write, cannot send response");
-        return;
-    }
-    std::weak_ptr<HttpConnectionJob> weakConnectionJob(connectionJob);
+    // Get weak_ptr to self using shared_from_this() - no mutex needed!
+    std::weak_ptr<HttpConnectionJob> weakConnectionJob = weak_from_this();
     bool keep_alive_copy = keep_alive_;
     
     // Create owned data for WriteJob
@@ -844,19 +827,16 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
 void HttpConnectionJob::closeConnection() {
     if (client_fd_ >= 0) {
         Logger::getInstance().logMessage("[ACCESS] DISCONNECT fd=" + std::to_string(client_fd_));
-        
-        // Remove from active connections map - this allows shared_ptr to be destroyed
-        // Worker threads holding weak_ptr will safely detect connection is closed
-        if (http_server_) {
-            http_server_->removeConnection(client_fd_);
-        }
-        
         close(client_fd_);
         client_fd_ = -1;
     }
     reading_active_ = false;
     
-    // Job will be returned to pool via cleanup callback
+    // Clear self-reference to allow destruction
+    // This will trigger the pool deleter when all weak_ptrs are gone
+    self_.reset();
+    
+    // Job will be returned to pool via custom deleter when shared_ptr refcount reaches 0
 }
 
 bool HttpConnectionJob::shouldKeepAlive(const HttpRequest& request) const {
@@ -995,19 +975,5 @@ void HttpServer::setAffinityWorkerPool(std::shared_ptr<AffinityWorkerPool> pool)
     job_server_.setAffinityWorkerPool(worker_pool_);
 }
 
-std::shared_ptr<HttpConnectionJob> HttpServer::getConnection(int fd) {
-    std::lock_guard<std::mutex> lock(connections_mutex_);
-    auto it = active_connections_.find(fd);
-    if (it != active_connections_.end()) {
-        return it->second;
-    }
-    return nullptr;
-}
-
-
-void HttpServer::removeConnection(int fd) {
-    std::lock_guard<std::mutex> lock(connections_mutex_);
-    active_connections_.erase(fd);
-}
 
 } // namespace caduvelox

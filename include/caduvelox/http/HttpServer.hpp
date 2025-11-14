@@ -89,16 +89,6 @@ public:
      * Signal that a worker has posted a response
      */
     void signalWorkerResponse();
-    
-    /**
-     * Get shared_ptr for a connection (for weak_ptr lifetime management)
-     */
-    std::shared_ptr<HttpConnectionJob> getConnection(int fd);
-    
-    /**
-     * Remove connection from active map (called on close)
-     */
-    void removeConnection(int fd);
 
 private:
     Server& job_server_;
@@ -113,10 +103,6 @@ private:
     SPSCQueue<WorkerResponse> response_queue_;  // Worker threads -> io_uring thread
     std::unique_ptr<EventFd> worker_event_fd_;  // For waking up io_uring thread
     EventFdMonitorJob* eventfd_monitor_job_ = nullptr; // Pool-allocated job to monitor eventfd
-
-    // Active connection tracking (for shared_ptr lifetime management)
-    std::unordered_map<int, std::shared_ptr<HttpConnectionJob>> active_connections_;
-    std::mutex connections_mutex_;
 
     /**
      * Start accepting connections
@@ -175,23 +161,29 @@ private:
 /**
  * HTTP connection handler (pool-allocated)
  * Manages HTTP request/response lifecycle for a single client connection
+ * 
  */
-class HttpConnectionJob : public IoJob {
+class HttpConnectionJob : public IoJob, public std::enable_shared_from_this<HttpConnectionJob> {
     // Allow HttpServer to call sendResponse for worker responses
     friend class HttpServer;
     
 public:
     /**
      * Create HTTP connection handler using lock-free pool allocation.
-     * Returns raw pointer - managed by pool lifecycle via cleanup callbacks.
+     * Returns shared_ptr with custom deleter that returns object to pool.
+     * The object memory comes from the lock-free pool (zero malloc overhead),
+     * but the shared_ptr control block is heap-allocated (one malloc per connection).
+     * This gives us proper reference counting without the performance cost of
+     * allocating the object itself.
+     * 
      * @param client_fd Client socket file descriptor
      * @param job_server Reference to the io_uring server
      * @param router HTTP router for request handling
      * @param http_server Pointer to HTTP server (for worker response queue)
      * @param max_request_size Maximum request size in bytes
-     * @return Pointer to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
+     * @return shared_ptr to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
      */
-    static HttpConnectionJob* createFromPool(
+    static std::shared_ptr<HttpConnectionJob> createFromPool(
         int client_fd, 
         Server& job_server,
         const HttpRouter& router,
@@ -239,6 +231,7 @@ private:
     size_t max_request_size_;
     bool reading_active_;
     bool keep_alive_;  // Track if connection should remain open
+    std::shared_ptr<HttpConnectionJob> self_;  // Self-reference to keep alive during async ops
 };
 
 } // namespace caduvelox
