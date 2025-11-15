@@ -525,9 +525,16 @@ void HttpConnectionJob::handleDataReceivedOnWorker(const char* data, ssize_t len
     }
     
     // RAII-style release using scope guard
+    // Can be cancelled if we post a response (io_uring thread will release instead)
     struct ReleaseGuard {
         HttpConnectionJob* job;
+        bool should_release = true;
+        
+        void cancel() { should_release = false; }
+        
         ~ReleaseGuard() {
+            if (!should_release) return;
+            
             if (!job->tryRelease()) {
                 // Job was discarded while we were processing
                 // We're the last one - cleanup now
@@ -558,8 +565,17 @@ void HttpConnectionJob::handleDataReceivedOnWorker(const char* data, ssize_t len
     // Append data to request buffer (thread-safe since each connection has affinity to one worker)
     request_buffer_.append(data, len);
     
+    // Track if we posted any responses (if so, don't release - io_uring will release)
+    size_t buffer_size_before = request_buffer_.size();
+    
     // Process HTTP requests on worker thread
     processHttpRequestsOnWorker();
+    
+    // If buffer was consumed, we processed at least one request and posted responses
+    // Cancel release - io_uring thread owns the acquisition now via WorkerResponse queue
+    if (request_buffer_.size() < buffer_size_before) {
+        guard.cancel();
+    }
 }
 
 void HttpConnectionJob::handleReadError(int error) {
@@ -623,9 +639,14 @@ void HttpConnectionJob::processHttpRequestsOnWorker() {
             Logger::getInstance().logMessage("HttpConnectionJob: Response generated, status=" + std::to_string(response.status_code));
             
             // Post response back to main thread for io_uring operations
+            // IMPORTANT: Caller must NOT release job - io_uring thread will release
             postResponseFromWorker(response);
+            
+            // Continue processing more requests if pipelined
+            // Don't return - process next request
         } else if (result == HttpParser::ParseResult::Incomplete) {
             // Need more data - wait for next read
+            // No response posted - caller should release
             return;
         } else {
             // BadRequest - malformed input
@@ -644,6 +665,7 @@ void HttpConnectionJob::processHttpRequestsOnWorker() {
             error_response.setHeader("connection", "close");
             error_response.body = "Bad Request";
             
+            // IMPORTANT: Caller must NOT release job - io_uring thread will release
             postResponseFromWorker(error_response);
             return;
         }
@@ -1055,33 +1077,26 @@ void HttpServer::processWorkerResponses() {
             continue;
         }
         
-        // Acquire the job to ensure it's still alive
-        if (!job->tryAcquire()) {
-            Logger::getInstance().logMessage("HttpServer: Job already discarded for fd=" + 
-                                           std::to_string(wr.client_fd));
-            continue;
-        }
-        
-        // IMPORTANT: For file responses, sendResponse creates HTTPFileJob which will
-        // take ownership of the acquisition. The HTTPFileJob callbacks will release.
-        // For non-file responses, sendResponse creates WriteJob with callbacks that
-        // will acquire/release independently. So we release here for non-file responses.
+        // Worker thread kept the job acquired while in queue to prevent premature destruction
+        // The job is in WORKING state. We need to release it so sendResponse can proceed.
+        // For non-file responses: we release immediately, WriteJob callbacks re-acquire
+        // For file responses: we keep it acquired, HTTPFileJob callbacks will release
         
         bool is_file_response = !wr.response.file_path.empty();
         
-        // Send the response
+        // Send the response (job must be acquired)
         job->sendResponse(wr.response);
         
-        // Release ONLY if not a file response
-        // File responses: HTTPFileJob owns the acquisition and will release in callbacks
-        // Non-file responses: WriteJob has its own acquire/release in callbacks
+        // Release the acquisition passed from worker thread
+        // For file responses: Don't release yet - HTTPFileJob callbacks will release
+        // For non-file responses: Release now - WriteJob callbacks will re-acquire if needed
         if (!is_file_response) {
             if (!job->tryRelease()) {
-                // Job was discarded while we were processing
+                // Job was discarded while processing
                 lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(job);
             }
         }
-        // else: HTTPFileJob callbacks will release
+        // else: HTTPFileJob callbacks own the acquisition and will release
         
         processed++;
     }
