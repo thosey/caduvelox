@@ -262,6 +262,13 @@ private:
     
     // Atomic state machine for lock-free lifetime management
     JobStateMachine state_;
+    
+    // Generation counter to detect ABA problem (memory reuse)
+    // Incremented each time job is allocated from pool
+    std::atomic<uint64_t> generation_;
+public:
+    uint64_t getGeneration() const { return generation_.load(std::memory_order_relaxed); }
+    void incrementGeneration() { generation_.fetch_add(1, std::memory_order_relaxed); }
 };
 
 } // namespace caduvelox
