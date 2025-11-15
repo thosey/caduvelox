@@ -817,8 +817,10 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
     
     std::string response_str = oss.str();
     
-    // Capture raw pointer - callbacks will use tryAcquire/tryRelease
+    // Capture raw pointer + generation for ABA detection
     HttpConnectionJob* conn_ptr = this;
+    uint64_t expected_generation = generation_.load(std::memory_order_relaxed);
+    int expected_fd = client_fd_;
     bool keep_alive_copy = keep_alive_;
     
     // Create owned data for WriteJob
@@ -829,7 +831,22 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         client_fd_,
         std::move(response_data),
         response_str.size(),
-        [conn_ptr, keep_alive_copy](int fd, size_t bytes_written) {
+        [conn_ptr, keep_alive_copy, expected_generation, expected_fd](int fd, size_t bytes_written) {
+            // Sanity check: fd should match
+            if (fd != expected_fd) {
+                Logger::getInstance().logError("HttpConnectionJob: FD mismatch in write callback, expected=" + 
+                                             std::to_string(expected_fd) + ", got=" + std::to_string(fd));
+                return;
+            }
+            
+            // Check generation to detect ABA problem (memory reuse)
+            uint64_t current_gen = conn_ptr->generation_.load(std::memory_order_relaxed);
+            if (current_gen != expected_generation) {
+                Logger::getInstance().logMessage("HttpConnectionJob: Detected stale write callback (ABA), expected_gen=" + 
+                                               std::to_string(expected_generation) + ", current_gen=" + std::to_string(current_gen));
+                return;
+            }
+            
             if (!conn_ptr->tryAcquire()) {
                 Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during write completion");
                 return;
@@ -852,7 +869,22 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
                 conn_ptr->closeConnection();
             }
         },
-        [conn_ptr](int fd, int error) {
+        [conn_ptr, expected_generation, expected_fd](int fd, int error) {
+            // Sanity check: fd should match
+            if (fd != expected_fd) {
+                Logger::getInstance().logError("HttpConnectionJob: FD mismatch in write error callback, expected=" + 
+                                             std::to_string(expected_fd) + ", got=" + std::to_string(fd));
+                return;
+            }
+            
+            // Check generation to detect ABA problem (memory reuse)
+            uint64_t current_gen = conn_ptr->generation_.load(std::memory_order_relaxed);
+            if (current_gen != expected_generation) {
+                Logger::getInstance().logMessage("HttpConnectionJob: Detected stale write error callback (ABA), expected_gen=" + 
+                                               std::to_string(expected_generation) + ", current_gen=" + std::to_string(current_gen));
+                return;
+            }
+            
             if (!conn_ptr->tryAcquire()) {
                 Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during write error");
                 return;
