@@ -6,6 +6,7 @@
 #include "caduvelox/http/HttpConnectionRecvHandler.hpp"
 #include "caduvelox/ring_buffer/BufferRingCoordinator.hpp"
 #include "caduvelox/util/ProvidedBufferToken.hpp"
+#include "caduvelox/util/PoolDeleter.hpp"
 #include "caduvelox/Config.hpp"
 #include "LockFreeMemoryPool.h"
 #include <sys/socket.h>
@@ -16,14 +17,6 @@
 #include <cerrno>
 #include <sstream>
 #include <algorithm>
-
-namespace {
-    void cleanupHttpConnectionJob(caduvelox::IoJob* job) {
-        lfmemorypool::lockfree_pool_free_fast<caduvelox::HttpConnectionJob>(
-            static_cast<caduvelox::HttpConnectionJob*>(job)
-        );
-    }
-}
 
 namespace caduvelox {
 
@@ -174,6 +167,15 @@ void HttpServer::stop() {
     Logger::getInstance().logMessage("HttpServer: Server stopped");
 }
 
+void HttpServer::removeConnection(int client_fd) {
+    auto it = active_connections_.find(client_fd);
+    if (it != active_connections_.end()) {
+        Logger::getInstance().logMessage("HttpServer: Removing connection fd=" + std::to_string(client_fd) + 
+                                       " from active connections");
+        active_connections_.erase(it);
+    }
+}
+
 void HttpServer::startAccepting() {
     if (!running_) {
         return;
@@ -279,8 +281,8 @@ void HttpServer::handleNewConnection(int client_fd, const sockaddr* addr, sockle
 }
 
 void HttpServer::createConnectionHandler(int client_fd) {
-    // Create connection from pool (returns raw pointer - no heap allocation!)
-    auto* connection_job = HttpConnectionJob::createFromPool(client_fd, job_server_, router_, this);
+    // Create connection from pool (returns shared_ptr - pool allocation with custom deleter!)
+    auto connection_job = HttpConnectionJob::createFromPool(client_fd, job_server_, router_, this);
     
     if (!connection_job) {
         Logger::getInstance().logError("HttpServer: Failed to allocate HttpConnectionJob from pool");
@@ -288,13 +290,16 @@ void HttpServer::createConnectionHandler(int client_fd) {
         return;
     }
     
+    // Store in active connections map to keep shared_ptr alive
+    active_connections_[client_fd] = connection_job;
+    
     // Start the connection job
-    // Lifetime managed via atomic state machine (AVAILABLE/WORKING/DISCARDED)
-    // Truly lock-free - no mutexes, no heap allocations!
+    // Lifetime managed via shared_ptr reference counting (atomic, lock-free!)
+    // No malloc - uses pool allocation with PoolDeleter
     connection_job->start();
     
-    // Job stays alive until closeConnection() calls tryDiscard()
-    // Worker threads use tryAcquire()/tryRelease() for safe access
+    // shared_ptr in map keeps job alive while connection is active
+    // When connection closes, removeConnection() will remove from map
 }
 
 void HttpServer::handleKTLSReady(int client_fd, SSL* ssl) {
@@ -376,26 +381,29 @@ int HttpServer::createServerSocket(int port, const std::string& bind_addr) {
 }
 
 // HttpConnectionJob implementation
-// Pool-allocated only - managed via cleanup callbacks (no shared_ptr needed)
+// Pool-allocated with shared_ptr + PoolDeleter for safe lifetime management
 
-HttpConnectionJob* HttpConnectionJob::createFromPool(
+std::shared_ptr<HttpConnectionJob> HttpConnectionJob::createFromPool(
     int client_fd, 
     Server& job_server,
     const HttpRouter& router,
     HttpServer* http_server,
     size_t max_request_size) {
     
-    HttpConnectionJob* job = lfmemorypool::lockfree_pool_alloc_fast<HttpConnectionJob>(
+    auto job = makeSharedFromPool<HttpConnectionJob>(
         client_fd, job_server, router, http_server, max_request_size);
     if (!job) {
         return nullptr; // Pool exhausted
     }
     
-    // Increment generation counter to detect ABA problem
+    // Set up weak self-reference for creating shared_ptrs in callbacks
+    job->setSelfReference(job);
+    
+    // Increment generation counter to detect ABA problem (can be removed later)
     job->incrementGeneration();
     
     // Job starts in AVAILABLE state (set in constructor)
-    // No heap allocations - truly lock-free!
+    // No malloc - uses pool allocation with custom deleter!
     return job;
 }
 
@@ -430,10 +438,10 @@ void HttpConnectionJob::start() {
 
 std::optional<IoJob::CleanupCallback> HttpConnectionJob::handleCompletion(Server& server, struct io_uring_cqe* cqe) {
     // This job doesn't handle completions directly - ReadJob/WriteJob do
-    // Jobs manage their own lifecycle with pools now
+    // With shared_ptr management, no manual cleanup needed
     (void)server;
     (void)cqe;
-    return cleanupHttpConnectionJob;
+    return std::nullopt;  // No cleanup callback - shared_ptr handles lifetime
 }
 
 void HttpConnectionJob::startReading() {
@@ -696,8 +704,15 @@ void HttpConnectionJob::postResponseFromWorker(const HttpResponse& response) {
     Logger::getInstance().logMessage("HttpConnectionJob: Posting response from worker thread, status=" + 
                                    std::to_string(response.status_code));
     
-    // Create WorkerResponse with raw pointer - io_uring thread will use tryAcquire/tryRelease
-    WorkerResponse wr(client_fd_, response, keep_alive_, this);
+    // Get shared_ptr to self - keeps job alive while in worker response queue
+    auto self = getShared();
+    if (!self) {
+        Logger::getInstance().logError("HttpConnectionJob: Cannot post response, job being destroyed");
+        return;
+    }
+    
+    // Create WorkerResponse with shared_ptr - keeps job alive until processed
+    WorkerResponse wr(client_fd_, response, keep_alive_, self);
     
     if (!http_server_->getResponseQueue().try_push(std::move(wr))) {
         Logger::getInstance().logError("HttpConnectionJob: Worker response queue full! Dropping response for fd=" + 
@@ -719,13 +734,13 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         // This is a file serving request - use HTTPFileJob for zero-copy transfer
         Logger::getInstance().logMessage("HttpConnectionJob: Using HTTPFileJob for file: " + response.file_path);
         
-        // CRITICAL: HTTPFileJob needs to keep HttpConnectionJob alive during file transfer
-        // to prevent ABA problem (memory reuse while callbacks are pending).
-        // The caller (worker thread) MUST keep this job acquired (WORKING state) and
-        // NOT release until HTTPFileJob callbacks complete. The callbacks will release.
-        HttpConnectionJob* conn_ptr = this;
-        uint64_t expected_generation = generation_.load(std::memory_order_relaxed);
-        int expected_fd = client_fd_;  // Capture fd for sanity check
+        // Get shared_ptr to self - keeps job alive during file transfer
+        auto self = getShared();
+        if (!self) {
+            Logger::getInstance().logError("HttpConnectionJob: Cannot send file response, job being destroyed");
+            closeConnection();
+            return;
+        }
         
         HttpResponse response_copy = response;
         // Use per-connection keep_alive_ flag (not response header)
@@ -741,73 +756,21 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             client_fd_,
             file_path,
             std::move(response_copy), // Pass the response for any custom headers
-            [conn_ptr, keep_alive_copy, expected_generation, expected_fd](int fd, size_t bytes_sent) {
-                // Sanity check: fd should match
-                if (fd != expected_fd) {
-                    Logger::getInstance().logError("HttpConnectionJob: FD mismatch in callback, expected=" + 
-                                                 std::to_string(expected_fd) + ", got=" + std::to_string(fd));
-                    return;
-                }
-                
-                // Check generation to detect ABA problem (memory reuse)
-                // NOTE: This is still potentially unsafe if memory was reused, but combined
-                // with FD check it's much more likely to catch issues
-                uint64_t current_gen = conn_ptr->generation_.load(std::memory_order_relaxed);
-                if (current_gen != expected_generation) {
-                    Logger::getInstance().logMessage("HttpConnectionJob: Detected stale callback (ABA), expected_gen=" + 
-                                                   std::to_string(expected_generation) + ", current_gen=" + std::to_string(current_gen));
-                    return;
-                }
-                
-                // Job is already acquired by caller (worker thread)
-                // We just use it and release when done
-                struct ReleaseGuard {
-                    HttpConnectionJob* job_;
-                    ~ReleaseGuard() {
-                        if (!job_->tryRelease()) {
-                            lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(job_);
-                        }
-                    }
-                } guard{conn_ptr};
-                
+            [self, keep_alive_copy](int fd, size_t bytes_sent) {
+                // shared_ptr keeps job alive - safe to use!
                 Logger::getInstance().logMessage("HttpConnectionJob: File transfer complete fd=" + 
                                                std::to_string(fd) + ", bytes=" + std::to_string(bytes_sent));
                 if (keep_alive_copy) {
-                    conn_ptr->startReading();
+                    self->startReading();
                 } else {
-                    conn_ptr->closeConnection();
+                    self->closeConnection();
                 }
             },
-            [conn_ptr, expected_generation, expected_fd](int fd, int error) {
-                // Sanity check: fd should match
-                if (fd != expected_fd) {
-                    Logger::getInstance().logError("HttpConnectionJob: FD mismatch in error callback, expected=" + 
-                                                 std::to_string(expected_fd) + ", got=" + std::to_string(fd));
-                    return;
-                }
-                
-                // Check generation to detect ABA problem (memory reuse)
-                uint64_t current_gen = conn_ptr->generation_.load(std::memory_order_relaxed);
-                if (current_gen != expected_generation) {
-                    Logger::getInstance().logMessage("HttpConnectionJob: Detected stale error callback (ABA), expected_gen=" + 
-                                                   std::to_string(expected_generation) + ", current_gen=" + std::to_string(current_gen));
-                    return;
-                }
-                
-                // Job is already acquired by caller (worker thread)
-                // We just use it and release when done
-                struct ReleaseGuard {
-                    HttpConnectionJob* job_;
-                    ~ReleaseGuard() {
-                        if (!job_->tryRelease()) {
-                            lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(job_);
-                        }
-                    }
-                } guard{conn_ptr};
-                
+            [self](int fd, int error) {
+                // shared_ptr keeps job alive - safe to use!
                 Logger::getInstance().logError("HttpConnectionJob: File transfer error fd=" + 
                                              std::to_string(fd) + ", error=" + std::to_string(error));
-                conn_ptr->closeConnection();
+                self->closeConnection();
             }
         );
         
@@ -839,10 +802,14 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
     
     std::string response_str = oss.str();
     
-    // Capture raw pointer + generation for ABA detection
-    HttpConnectionJob* conn_ptr = this;
-    uint64_t expected_generation = generation_.load(std::memory_order_relaxed);
-    int expected_fd = client_fd_;
+    // Get shared_ptr to self - keeps job alive during write
+    auto self = getShared();
+    if (!self) {
+        Logger::getInstance().logError("HttpConnectionJob: Cannot send response, job being destroyed");
+        closeConnection();
+        return;
+    }
+    
     bool keep_alive_copy = keep_alive_;
     
     // Create owned data for WriteJob
@@ -853,76 +820,22 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         client_fd_,
         std::move(response_data),
         response_str.size(),
-        [conn_ptr, keep_alive_copy, expected_generation, expected_fd](int fd, size_t bytes_written) {
-            // Sanity check: fd should match
-            if (fd != expected_fd) {
-                Logger::getInstance().logError("HttpConnectionJob: FD mismatch in write callback, expected=" + 
-                                             std::to_string(expected_fd) + ", got=" + std::to_string(fd));
-                return;
-            }
-            
-            // Check generation to detect ABA problem (memory reuse)
-            uint64_t current_gen = conn_ptr->generation_.load(std::memory_order_relaxed);
-            if (current_gen != expected_generation) {
-                Logger::getInstance().logMessage("HttpConnectionJob: Detected stale write callback (ABA), expected_gen=" + 
-                                               std::to_string(expected_generation) + ", current_gen=" + std::to_string(current_gen));
-                return;
-            }
-            
-            if (!conn_ptr->tryAcquire()) {
-                Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during write completion");
-                return;
-            }
-            struct ReleaseGuard {
-                HttpConnectionJob* job_;
-                ~ReleaseGuard() {
-                    if (!job_->tryRelease()) {
-                        lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(job_);
-                    }
-                }
-            } guard{conn_ptr};
-            
+        [self, keep_alive_copy](int fd, size_t bytes_written) {
+            // shared_ptr keeps job alive - safe to use!
             Logger::getInstance().logMessage("HttpConnectionJob: Response sent fd=" + std::to_string(fd) + 
                                            ", bytes=" + std::to_string(bytes_written));
             // Check if we should keep the connection alive for more requests
             if (keep_alive_copy) {
-                conn_ptr->continueReading();
+                self->continueReading();
             } else {
-                conn_ptr->closeConnection();
+                self->closeConnection();
             }
         },
-        [conn_ptr, expected_generation, expected_fd](int fd, int error) {
-            // Sanity check: fd should match
-            if (fd != expected_fd) {
-                Logger::getInstance().logError("HttpConnectionJob: FD mismatch in write error callback, expected=" + 
-                                             std::to_string(expected_fd) + ", got=" + std::to_string(fd));
-                return;
-            }
-            
-            // Check generation to detect ABA problem (memory reuse)
-            uint64_t current_gen = conn_ptr->generation_.load(std::memory_order_relaxed);
-            if (current_gen != expected_generation) {
-                Logger::getInstance().logMessage("HttpConnectionJob: Detected stale write error callback (ABA), expected_gen=" + 
-                                               std::to_string(expected_generation) + ", current_gen=" + std::to_string(current_gen));
-                return;
-            }
-            
-            if (!conn_ptr->tryAcquire()) {
-                Logger::getInstance().logMessage("HttpConnectionJob: Connection closed during write error");
-                return;
-            }
-            struct ReleaseGuard {
-                HttpConnectionJob* job_;
-                ~ReleaseGuard() {
-                    if (!job_->tryRelease()) {
-                        lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(job_);
-                    }
-                }
-            } guard{conn_ptr};
-            
+        [self](int fd, int error) {
+            // shared_ptr keeps job alive - safe to use!
             Logger::getInstance().logError("HttpConnectionJob: Write error fd=" + std::to_string(fd) + 
                                          ", error=" + std::to_string(error));
-            conn_ptr->closeConnection();
+            self->closeConnection();
         }
     );
 
@@ -948,19 +861,24 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
 void HttpConnectionJob::closeConnection() {
     if (client_fd_ >= 0) {
         Logger::getInstance().logMessage("[ACCESS] DISCONNECT fd=" + std::to_string(client_fd_));
+        
+        int fd_to_close = client_fd_;
         close(client_fd_);
         client_fd_ = -1;
+        
+        // Remove from active connections map - this releases the shared_ptr
+        // When all references are gone, PoolDeleter will return to pool
+        if (http_server_) {
+            http_server_->removeConnection(fd_to_close);
+        }
     }
     reading_active_ = false;
     
-    // Try to discard this job
-    if (tryDiscard()) {
-        // We successfully transitioned AVAILABLE -> DISCARDED
-        // No worker is processing, safe to return to pool immediately
-        lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(this);
-    }
-    // else: Worker is processing (WORKING state)
-    // We marked it as DISCARDED, worker will cleanup when done
+    // Try to discard this job - marks it as DISCARDED for any pending workers
+    tryDiscard();
+    
+    // No manual cleanup needed - shared_ptr will handle it via PoolDeleter
+    // when last reference is released
 }
 
 bool HttpConnectionJob::shouldKeepAlive(const HttpRequest& request) const {
@@ -1070,33 +988,17 @@ void HttpServer::processWorkerResponses() {
     while (auto maybe_response = response_queue_.try_pop()) {
         WorkerResponse& wr = *maybe_response;
         
-        HttpConnectionJob* job = wr.connection_job;
+        // shared_ptr keeps job alive - no tryAcquire/tryRelease needed!
+        auto job = wr.connection_job;
         if (!job) {
             Logger::getInstance().logMessage("HttpServer: Null connection job for fd=" + 
                                            std::to_string(wr.client_fd));
             continue;
         }
         
-        // Worker thread kept the job acquired while in queue to prevent premature destruction
-        // The job is in WORKING state. We need to release it so sendResponse can proceed.
-        // For non-file responses: we release immediately, WriteJob callbacks re-acquire
-        // For file responses: we keep it acquired, HTTPFileJob callbacks will release
-        
-        bool is_file_response = !wr.response.file_path.empty();
-        
-        // Send the response (job must be acquired)
+        // Send the response - shared_ptr ensures job stays alive
+        // Callbacks will also capture shared_ptr to keep job alive
         job->sendResponse(wr.response);
-        
-        // Release the acquisition passed from worker thread
-        // For file responses: Don't release yet - HTTPFileJob callbacks will release
-        // For non-file responses: Release now - WriteJob callbacks will re-acquire if needed
-        if (!is_file_response) {
-            if (!job->tryRelease()) {
-                // Job was discarded while processing
-                lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(job);
-            }
-        }
-        // else: HTTPFileJob callbacks own the acquisition and will release
         
         processed++;
     }

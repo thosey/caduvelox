@@ -140,8 +140,10 @@ target_compile_definitions(caduvelox PUBLIC
 # Enable testing
 enable_testing()
 
-# Add the main test executable
+# Add the main test executable (runs all tests together)
 add_test(NAME CaduveloxTests COMMAND caduvelox_tests)
+# Set timeout for full test suite - StaticHttpsServerTests are slow (~15s each * 7 tests)
+set_tests_properties(CaduveloxTests PROPERTIES TIMEOUT 300)
 
 # Add individual test suites for better granularity
 add_test(NAME RingBufferTests COMMAND caduvelox_tests --gtest_filter="*RingBufferTest.*")
@@ -157,6 +159,8 @@ add_test(NAME JobHttpPipeliningTests COMMAND caduvelox_tests --gtest_filter="Job
 add_test(NAME JobKTLSPipeliningTests COMMAND caduvelox_tests --gtest_filter="JobKTLSPipeliningTest.*")
 add_test(NAME JobKTLSSendFileTests COMMAND caduvelox_tests --gtest_filter="JobKTLSSendFileTest.*")
 add_test(NAME StaticHttpsServerTests COMMAND caduvelox_tests --gtest_filter="StaticHttpsServerTest.*")
+# StaticHttpsServerTests can be slow due to socket timeouts in test client code
+set_tests_properties(StaticHttpsServerTests PROPERTIES TIMEOUT 120)
 add_test(NAME SecurityRegressionTests COMMAND caduvelox_tests --gtest_filter="SecurityRegressionTest.*")
 
 # Add KTLS tests separately (these might fail in CI)
