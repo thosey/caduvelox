@@ -979,26 +979,17 @@ void HttpServer::processWorkerResponses() {
     while (auto maybe_response = response_queue_.try_pop()) {
         WorkerResponse& wr = *maybe_response;
         
-        // Try to acquire the job - skip if discarded
+        // Worker thread already validated job is alive (holds it acquired)
+        // We don't need to acquire again - just send the response
         HttpConnectionJob* job = wr.connection_job;
-        if (!job || !job->tryAcquire()) {
-            Logger::getInstance().logMessage("HttpServer: Connection already closed for fd=" + 
+        if (!job) {
+            Logger::getInstance().logMessage("HttpServer: Null connection job for fd=" + 
                                            std::to_string(wr.client_fd));
             continue;
         }
         
-        // RAII guard to ensure tryRelease() is called
-        struct ReleaseGuard {
-            HttpConnectionJob* job_;
-            ~ReleaseGuard() {
-                if (!job_->tryRelease()) {
-                    // Job was discarded while we held it - cleanup
-                    lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(job_);
-                }
-            }
-        } guard{job};
-        
         // Send the response via the connection job
+        // Worker thread still holds the job acquired, ensuring it's safe
         job->sendResponse(wr.response);
         processed++;
     }
