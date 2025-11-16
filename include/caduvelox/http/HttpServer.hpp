@@ -232,6 +232,14 @@ public:
     int getClientFd() const { return client_fd_; }
     
     /**
+     * Get shared_ptr to this job (for callbacks that need to keep job alive)
+     * Uses weak_ptr internally to avoid circular references
+     */
+    std::shared_ptr<HttpConnectionJob> getShared() {
+        return self_.lock();
+    }
+    
+    /**
      * Try to acquire job for worker processing
      * @return true if successfully acquired (AVAILABLE -> WORKING), false if discarded
      */
@@ -266,14 +274,6 @@ private:
         return state_.tryDiscard();
     }
     void continueReading();
-    
-    /**
-     * Get shared_ptr to this job (for callbacks that need to keep job alive)
-     * Uses weak_ptr internally to avoid circular references
-     */
-    std::shared_ptr<HttpConnectionJob> getShared() {
-        return self_.lock();
-    }
     
     /**
      * Set the weak_ptr to self (called after shared_ptr is created)

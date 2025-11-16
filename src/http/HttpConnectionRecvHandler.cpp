@@ -21,14 +21,20 @@ void HttpConnectionRecvHandler::onDataToken(std::shared_ptr<ProvidedBufferToken>
         return;
     }
     
+    // Get shared_ptr to keep connection alive on worker thread
+    auto conn_shared = connection->getShared();
+    if (!conn_shared) {
+        // Connection is being destroyed, don't post to worker
+        return;
+    }
+    
     auto* worker_pool = static_cast<AffinityWorkerPool*>(worker_pool_ptr);
     int connection_id = connection->getClientFd();
     
     // Post to worker thread with connection affinity
-    // Worker will use tryAcquire/tryRelease for safe access
-    HttpConnectionJob* conn_ptr = connection;
-    worker_pool->post(connection_id, [conn_ptr, token]() {
-        conn_ptr->handleDataReceivedOnWorker(token->data(), token->size());
+    // Capture shared_ptr to keep connection alive - NO MORE RAW POINTERS!
+    worker_pool->post(connection_id, [conn_shared, token]() {
+        conn_shared->handleDataReceivedOnWorker(token->data(), token->size());
     });
 }
 

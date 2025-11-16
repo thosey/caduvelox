@@ -525,35 +525,10 @@ void HttpConnectionJob::handleDataReceived(const char* data, ssize_t len) {
 }
 
 void HttpConnectionJob::handleDataReceivedOnWorker(const char* data, ssize_t len) {
-    // Try to acquire job for processing (AVAILABLE -> WORKING)
-    if (!tryAcquire()) {
-        // Job was discarded, don't process
-        Logger::getInstance().logMessage("HttpConnectionJob: Skipping worker processing, job discarded fd=" + std::to_string(client_fd_));
-        return;
-    }
-    
-    // RAII-style release using scope guard
-    // Can be cancelled if we post a response (io_uring thread will release instead)
-    struct ReleaseGuard {
-        HttpConnectionJob* job;
-        bool should_release = true;
-        
-        void cancel() { should_release = false; }
-        
-        ~ReleaseGuard() {
-            if (!should_release) return;
-            
-            if (!job->tryRelease()) {
-                // Job was discarded while we were processing
-                // We're the last one - cleanup now
-                Logger::getInstance().logMessage("HttpConnectionJob: Worker detected discard, cleaning up fd=" + std::to_string(job->client_fd_));
-                lfmemorypool::lockfree_pool_free_fast<HttpConnectionJob>(job);
-            }
-        }
-    } guard{this};
+    // shared_ptr in caller keeps job alive - no need for tryAcquire/tryRelease!
     
     if (len == 0) {
-        // EOF - client disconnected, cleanup handled by connection state machine
+        // EOF - client disconnected
         Logger::getInstance().logMessage("HttpConnectionJob: Client disconnected on worker fd=" + std::to_string(client_fd_));
         return;
     }
@@ -573,17 +548,8 @@ void HttpConnectionJob::handleDataReceivedOnWorker(const char* data, ssize_t len
     // Append data to request buffer (thread-safe since each connection has affinity to one worker)
     request_buffer_.append(data, len);
     
-    // Track if we posted any responses (if so, don't release - io_uring will release)
-    size_t buffer_size_before = request_buffer_.size();
-    
     // Process HTTP requests on worker thread
     processHttpRequestsOnWorker();
-    
-    // If buffer was consumed, we processed at least one request and posted responses
-    // Cancel release - io_uring thread owns the acquisition now via WorkerResponse queue
-    if (request_buffer_.size() < buffer_size_before) {
-        guard.cancel();
-    }
 }
 
 void HttpConnectionJob::handleReadError(int error) {
