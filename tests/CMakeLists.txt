@@ -93,6 +93,8 @@ set(TEST_SOURCES
     static_https_server_test.cpp
     # Security Regression Tests (issues #1-#10 from audit)
     security_regression_test.cpp
+    # Connection Stress Tests (simulates problematic clients)
+    connection_stress_test.cpp
 )
 add_executable(caduvelox_tests ${TEST_SOURCES})
 add_dependencies(caduvelox_tests generate_test_cert_key)
@@ -162,6 +164,7 @@ add_test(NAME StaticHttpsServerTests COMMAND caduvelox_tests --gtest_filter="Sta
 # StaticHttpsServerTests can be slow due to socket timeouts in test client code
 set_tests_properties(StaticHttpsServerTests PROPERTIES TIMEOUT 120)
 add_test(NAME SecurityRegressionTests COMMAND caduvelox_tests --gtest_filter="SecurityRegressionTest.*")
+add_test(NAME ConnectionStressTests COMMAND caduvelox_tests --gtest_filter="ConnectionStressTest.*")
 
 # Add KTLS tests separately (these might fail in CI)
 add_test(NAME KTLSTests COMMAND caduvelox_tests "--gtest_filter=KTLS*")
