@@ -451,8 +451,9 @@ void HttpConnectionJob::startReading() {
 
     reading_active_ = true;
     
-    // Pass raw pointer to handler - worker will use tryAcquire/tryRelease for safety
-    HttpConnectionRecvHandler handler{this};
+    // Create handler with weak_ptr to avoid keeping connection alive unnecessarily
+    // Multishot recv will get shared_ptr when needed
+    HttpConnectionRecvHandler handler{self_};
     
     // Check if we have affinity workers for zero-copy processing
     auto worker_pool = job_server_.getAffinityWorkerPool();

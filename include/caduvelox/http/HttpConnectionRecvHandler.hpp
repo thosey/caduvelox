@@ -11,10 +11,10 @@ class AffinityWorkerPool;
 
 /**
  * Handler for HttpConnectionJob multishot recv operations with affinity workers
- * Uses raw pointer - worker thread will use tryAcquire/tryRelease for safety
+ * Uses shared_ptr to keep connection alive while multishot recv is active
  */
 struct HttpConnectionRecvHandler {
-    HttpConnectionJob* connection;  // Raw pointer - protected by atomic state machine
+    std::weak_ptr<HttpConnectionJob> connection;  // weak_ptr to avoid circular reference
     
     // Error handling
     void onError(int error);
