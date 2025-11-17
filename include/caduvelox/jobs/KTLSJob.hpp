@@ -112,6 +112,10 @@ private:
     // Handshake state tracking
     bool ssl_initialized_;
     int last_ssl_error_;
+    
+    // Track pending io_uring operations (for linked ops like POLL+TIMEOUT)
+    // Must wait for all to complete before cleanup
+    int pending_operations_ = 0;
 };
 
 } // namespace caduvelox

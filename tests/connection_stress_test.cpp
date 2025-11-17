@@ -311,3 +311,171 @@ TEST_F(ConnectionStressTest, PortScannerBehavior) {
     ASSERT_GT(n, 0);
     close(sock);
 }
+
+// KTLS-specific stress tests (require HTTPS server)
+class KTLSConnectionStressTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        // Set up logging
+        static ConsoleLogger console_logger;
+        Logger::setGlobalLogger(&console_logger);
+        
+        // Initialize job server
+        ASSERT_TRUE(job_server_.init(128));
+        
+        // Create HTTPS server with KTLS
+        http_server_ = std::make_unique<HttpServer>(job_server_);
+        
+        // Add a simple test route
+        http_server_->addRoute("GET", "/", [](const HttpRequest& req, HttpResponse& res) {
+            res.setStatus(200);
+            res.setBody("OK");
+            res.setHeader("Content-Type", "text/plain");
+        });
+        
+        // Listen on KTLS port with test certificates
+        ASSERT_TRUE(http_server_->listenKTLS(18890, "test_cert.pem", "test_key.pem", "127.0.0.1"));
+        
+        // Start event loop
+        event_loop_thread_ = std::thread([this]() {
+            job_server_.run();
+        });
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    
+    void TearDown() override {
+        if (http_server_) {
+            http_server_->stop();
+        }
+        job_server_.stop();
+        
+        if (event_loop_thread_.joinable()) {
+            event_loop_thread_.join();
+        }
+    }
+    
+    int connectToServer() {
+        int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) return -1;
+        
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(18890);
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        
+        if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            close(sock);
+            return -1;
+        }
+        
+        return sock;
+    }
+    
+    Server job_server_;
+    std::unique_ptr<HttpServer> http_server_;
+    std::thread event_loop_thread_;
+};
+
+// Test: Connect and disconnect during TLS handshake (simulates scanner behavior)
+// This is the exact scenario that triggers the KTLSJob bug:
+// - Client connects
+// - Server starts TLS handshake (KTLSJob submits POLL+TIMEOUT linked ops)
+// - Client disconnects during handshake
+// - Both operations complete, but job was freed after first completion
+TEST_F(KTLSConnectionStressTest, AbortDuringTLSHandshake) {
+    for (int i = 0; i < 20; i++) {
+        int sock = connectToServer();
+        ASSERT_GT(sock, 0);
+        
+        // Give server a moment to start TLS handshake
+        // This allows KTLSJob to submit its linked POLL+TIMEOUT operations
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        
+        // Now abruptly close without completing handshake
+        // This causes SSL_accept() to fail, triggering the error path
+        // The bug: KTLSJob returns cleanup after first completion,
+        // but the linked timeout operation is still pending!
+        struct linger linger_opt = {1, 0};
+        setsockopt(sock, SOL_SOCKET, SO_LINGER, &linger_opt, sizeof(linger_opt));
+        close(sock);
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    // Give time for all pending operations to complete
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    
+    // Server should still be alive and responsive
+    // If the bug exists, it would have crashed with "pure virtual method called"
+    std::cout << "Server survived TLS handshake abort stress test!" << std::endl;
+}
+
+// Test: Multiple concurrent connections aborting at different stages of TLS handshake
+TEST_F(KTLSConnectionStressTest, ConcurrentTLSHandshakeAborts) {
+    std::vector<std::thread> threads;
+    
+    for (int i = 0; i < 10; i++) {
+        threads.emplace_back([this, i]() {
+            int sock = connectToServer();
+            if (sock > 0) {
+                // Each connection aborts at a slightly different time
+                // This maximizes the chance of catching race conditions
+                std::this_thread::sleep_for(std::chrono::milliseconds(i * 2));
+                
+                // Abrupt close with RST
+                struct linger linger_opt = {1, 0};
+                setsockopt(sock, SOL_SOCKET, SO_LINGER, &linger_opt, sizeof(linger_opt));
+                close(sock);
+            }
+        });
+    }
+    
+    for (auto& t : threads) {
+        t.join();
+    }
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    
+    std::cout << "Server survived concurrent TLS handshake abort stress test!" << std::endl;
+}
+
+// Test: Send invalid TLS data to trigger handshake error
+TEST_F(KTLSConnectionStressTest, InvalidTLSData) {
+    for (int i = 0; i < 10; i++) {
+        int sock = connectToServer();
+        ASSERT_GT(sock, 0);
+        
+        // Send garbage that looks nothing like TLS
+        // This should cause SSL_accept() to fail immediately
+        const char* garbage = "GET / HTTP/1.1\r\n\r\n";  // HTTP instead of TLS!
+        write(sock, garbage, strlen(garbage));
+        
+        // Wait a bit for error to propagate
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        
+        close(sock);
+    }
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    
+    std::cout << "Server survived invalid TLS data stress test!" << std::endl;
+}
+
+// Test: Rapid connect/disconnect to TLS server (simulates aggressive port scan)
+TEST_F(KTLSConnectionStressTest, RapidTLSConnectDisconnect) {
+    for (int i = 0; i < 50; i++) {
+        int sock = connectToServer();
+        ASSERT_GT(sock, 0);
+        
+        // Immediate close - most aggressive scenario
+        // KTLSJob might not even have started handshake yet
+        struct linger linger_opt = {1, 0};
+        setsockopt(sock, SOL_SOCKET, SO_LINGER, &linger_opt, sizeof(linger_opt));
+        close(sock);
+    }
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    
+    std::cout << "Server survived rapid TLS connect/disconnect stress test!" << std::endl;
+}

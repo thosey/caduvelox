@@ -54,6 +54,7 @@ KTLSJob::KTLSJob(int client_fd, SSL_CTX* ssl_ctx, SuccessCallback on_success, Er
     , on_error_(std::move(on_error))
     , ssl_initialized_(false)
     , last_ssl_error_(0)
+    , pending_operations_(0)
 {
     // Set socket to non-blocking for handshake
     int flags = fcntl(client_fd_, F_GETFL, 0);
@@ -219,6 +220,8 @@ void KTLSJob::submitPollOperation(Server& server, short events) {
     struct io_uring_sqe* tsqe = server.registerJob(this);
     if (!tsqe) {
         // If we cannot enqueue the timeout, still submit the poll to avoid stalling
+        // Increment pending for the poll operation we just added
+        pending_operations_++;
         server.submit();
         return;
     }
@@ -227,6 +230,10 @@ void KTLSJob::submitPollOperation(Server& server, short events) {
     ts.tv_sec = HANDSHAKE_TIMEOUT_MS / 1000;
     ts.tv_nsec = (HANDSHAKE_TIMEOUT_MS % 1000) * 1000000ULL;
     io_uring_prep_link_timeout(tsqe, &ts, 0);
+
+    // We submitted 2 linked operations (POLL + TIMEOUT)
+    // Both will deliver completions, so increment counter by 2
+    pending_operations_ += 2;
 
     server.submit();
 }
@@ -284,11 +291,17 @@ void KTLSJob::prepareSqe(struct io_uring_sqe* sqe) {
 }
 
 std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, struct io_uring_cqe* cqe) {
+    // Decrement pending operations counter for this completion
+    if (pending_operations_ > 0) {
+        pending_operations_--;
+    }
+    
     if (state_ == State::ERROR_STATE || state_ == State::KTLS_READY) {
-        // Job finished (success or error), return cleanup function
-        if (is_pool_allocated_) {
+        // Job finished (success or error), but check if all operations completed
+        if (pending_operations_ == 0 && is_pool_allocated_) {
             return cleanupKTLSJob;
         }
+        // Still have pending operations, don't cleanup yet
         return std::nullopt;
     }
 
@@ -297,7 +310,12 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
             // -ECANCELED indicates the linked timeout was canceled because the poll
             // completed normally earlier. We ignore these and continue.
             if (cqe->res == -ECANCELED) {
-                return std::nullopt; // nothing to do; state machine continues
+                // Timeout was canceled, check if we should cleanup now
+                if ((state_ == State::ERROR_STATE || state_ == State::KTLS_READY) && 
+                    pending_operations_ == 0 && is_pool_allocated_) {
+                    return cleanupKTLSJob;
+                }
+                return std::nullopt;
             }
 
         logger_.logError("KTLSJob: Poll operation failed for fd=" + std::to_string(client_fd_) + 
@@ -309,8 +327,8 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
         if (on_error_) {
             on_error_(client_fd_, cqe->res);
         }
-        // Return cleanup for error state
-        if (is_pool_allocated_) {
+        // Return cleanup only if all operations completed
+        if (pending_operations_ == 0 && is_pool_allocated_) {
             return cleanupKTLSJob;
         }
         return std::nullopt;
@@ -318,8 +336,9 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
 
     // Continue handshake process
     if (!performHandshakeStep(server)) {
-        // Error occurred or job completed - return cleanup if needed
-        if ((state_ == State::ERROR_STATE || state_ == State::KTLS_READY) && is_pool_allocated_) {
+        // Error occurred or job completed - return cleanup only if all operations done
+        if ((state_ == State::ERROR_STATE || state_ == State::KTLS_READY) && 
+            pending_operations_ == 0 && is_pool_allocated_) {
             return cleanupKTLSJob;
         }
     }
