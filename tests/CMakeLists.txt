@@ -78,8 +78,6 @@ set(TEST_SOURCES
     # Utility/Data Structure Tests (architecture-agnostic)
     util/ring_buffer/vyukov_ring_buffer_test.cpp
     util/ring_buffer/notifying_ring_buffer_test.cpp
-    # Job State Machine Tests (atomic state management)
-    job_state_machine_test.cpp
     # Router Unit Tests (architecture-agnostic)
     http_router_unit_test.cpp
     # Logger Tests (file logging and rotation)

@@ -15,13 +15,10 @@
 #include "caduvelox/util/SPSCQueue.hpp"
 #include "caduvelox/util/EventFd.hpp"
 #include "caduvelox/util/WorkerResponse.hpp"
-#include "caduvelox/util/JobStateMachine.hpp"
 #include "LockFreeMemoryPool.h"
 #include <openssl/ssl.h>
-#include <atomic>
 #include <memory>
 #include <unordered_map>
-#include <mutex>
 #include <string>
 
 namespace caduvelox {
@@ -156,14 +153,13 @@ private:
  * - Routes complete requests through HttpRouter
  * - Sends responses via WriteJob
  * - Handles connection cleanup
-/**
- * HTTP connection handler (pool-allocated with atomic state machine)
- * Manages HTTP request/response lifecycle for a single client connection
  * 
- * Uses atomic JobState for lock-free lifetime management:
- * - No heap allocations (truly lock-free!)
- * - CAS guards prevent use-after-free
- * - Deferred cleanup when worker is processing
+ * Note: This class uses shared_ptr for lifetime management due to complex async
+ * operation dependencies. Pool factory exists but is currently unused.
+ */
+/**
+ * HTTP connection handler (pool-allocated)
+ * Manages HTTP request/response lifecycle for a single client connection
  */
 class HttpConnectionJob : public IoJob {
     // Allow HttpServer to call sendResponse for worker responses
@@ -172,20 +168,13 @@ class HttpConnectionJob : public IoJob {
 public:
     /**
      * Create HTTP connection handler using lock-free pool allocation.
-     * Returns raw pointer to pool-allocated object with atomic state machine
-     * for lifetime management. Zero heap allocations - truly lock-free!
-     * 
-     * Lifetime is managed via atomic JobState transitions:
-     * - AVAILABLE: Ready for worker processing
-     * - WORKING: Worker is currently processing
-     * - DISCARDED: Connection closed, awaiting final cleanup
-     * 
+     * Returns raw pointer - managed by pool lifecycle via cleanup callbacks.
      * @param client_fd Client socket file descriptor
      * @param job_server Reference to the io_uring server
      * @param router HTTP router for request handling
      * @param http_server Pointer to HTTP server (for worker response queue)
      * @param max_request_size Maximum request size in bytes
-     * @return Raw pointer to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
+     * @return Pointer to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
      */
     static HttpConnectionJob* createFromPool(
         int client_fd, 
@@ -197,6 +186,7 @@ public:
 
     /**
      * Start reading from the connection
+     * Must be called after the object is created and in a shared_ptr
      */
     void start();
 
@@ -213,22 +203,6 @@ public:
     void handleDataReceivedOnWorker(const char* data, ssize_t len);
     void handleReadError(int error);
     int getClientFd() const { return client_fd_; }
-    
-    /**
-     * Try to acquire job for worker processing
-     * @return true if successfully acquired (AVAILABLE -> WORKING), false if discarded
-     */
-    bool tryAcquire() {
-        return state_.tryAcquire();
-    }
-    
-    /**
-     * Release job after worker processing
-     * @return true if released normally, false if was discarded (caller should cleanup)
-     */
-    bool tryRelease() {
-        return state_.tryRelease();
-    }
 
 private:
 
@@ -240,14 +214,6 @@ private:
     void sendResponse(const HttpResponse& response);
     void closeConnection();
     bool shouldKeepAlive(const HttpRequest& request) const;
-    
-    /**
-     * Try to discard job (mark for cleanup)
-     * @return true if we should cleanup now, false if worker will cleanup
-     */
-    bool tryDiscard() {
-        return state_.tryDiscard();
-    }
     void continueReading();
 
     int client_fd_;
@@ -258,16 +224,6 @@ private:
     size_t max_request_size_;
     bool reading_active_;
     bool keep_alive_;  // Track if connection should remain open
-    
-    // Atomic state machine for lock-free lifetime management
-    JobStateMachine state_;
-    
-    // Generation counter to detect ABA problem (memory reuse)
-    // Incremented each time job is allocated from pool
-    std::atomic<uint64_t> generation_;
-public:
-    uint64_t getGeneration() const { return generation_.load(std::memory_order_relaxed); }
-    void incrementGeneration() { generation_.fetch_add(1, std::memory_order_relaxed); }
 };
 
 } // namespace caduvelox
