@@ -1,32 +1,27 @@
 #pragma once
 
 #include "caduvelox/http/HttpTypes.hpp"
-#include <memory>
 
 namespace caduvelox {
-
-// Forward declare
-class HttpConnectionJob;
 
 /**
  * Message from worker thread to io_uring thread requesting a response be sent
  * 
- * Uses shared_ptr to keep HttpConnectionJob alive during queue transition
- * The shared_ptr uses a custom pool deleter, so no malloc overhead!
+ * Uses raw pointer - io_uring thread will use tryAcquire/tryRelease for safe access
  */
 struct WorkerResponse {
     int client_fd;                          // File descriptor to send response to
     HttpResponse response;                  // The response to send
     bool keep_alive;                        // Whether to keep connection alive
-    std::shared_ptr<HttpConnectionJob> connection_job;  // Keeps job alive via refcount
+    class HttpConnectionJob* connection_job;  // Raw pointer - protected by atomic state
     
     WorkerResponse() : client_fd(-1), keep_alive(false), connection_job(nullptr) {}
     
-    WorkerResponse(int fd, HttpResponse resp, bool ka, std::shared_ptr<HttpConnectionJob> job)
+    WorkerResponse(int fd, HttpResponse resp, bool ka, class HttpConnectionJob* job)
         : client_fd(fd)
         , response(std::move(resp))
         , keep_alive(ka)
-        , connection_job(std::move(job))
+        , connection_job(job)
     {}
     
     // Movable

@@ -13,8 +13,6 @@
 #include "caduvelox/logger/Logger.hpp"
 #include "caduvelox/threading/AffinityWorkerPool.hpp"
 #include "caduvelox/util/SPSCQueue.hpp"
-#include <unordered_map>
-#include <memory>
 #include "caduvelox/util/EventFd.hpp"
 #include "caduvelox/util/WorkerResponse.hpp"
 #include "caduvelox/util/JobStateMachine.hpp"
@@ -85,12 +83,6 @@ public:
     void setAffinityWorkerPool(std::shared_ptr<AffinityWorkerPool> pool);
     
     /**
-     * Remove a connection from the active connections map
-     * This allows the shared_ptr to be released
-     */
-    void removeConnection(int client_fd);
-    
-    /**
      * Get the response queue for worker threads to post responses
      */
     SPSCQueue<WorkerResponse>& getResponseQueue() { return response_queue_; }
@@ -113,10 +105,6 @@ private:
     SPSCQueue<WorkerResponse> response_queue_;  // Worker threads -> io_uring thread
     std::unique_ptr<EventFd> worker_event_fd_;  // For waking up io_uring thread
     EventFdMonitorJob* eventfd_monitor_job_ = nullptr; // Pool-allocated job to monitor eventfd
-    
-    // Active connections map (fd -> shared_ptr) to keep connections alive
-    // This ensures shared_ptr stays alive while connection is active
-    std::unordered_map<int, std::shared_ptr<HttpConnectionJob>> active_connections_;
 
     /**
      * Start accepting connections
@@ -184,26 +172,22 @@ class HttpConnectionJob : public IoJob {
 public:
     /**
      * Create HTTP connection handler using lock-free pool allocation.
-     * Returns shared_ptr to pool-allocated object with atomic state machine
-     * for lifetime management. Uses custom PoolDeleter - zero malloc overhead!
+     * Returns raw pointer to pool-allocated object with atomic state machine
+     * for lifetime management. Zero heap allocations - truly lock-free!
      * 
-     * The shared_ptr keeps the job alive while any callbacks hold references,
-     * solving the ABA problem where memory could be reused while callbacks
-     * are pending. Custom deleter returns memory to pool instead of using delete.
-     * 
-     * Lifetime is managed via:
-     * - shared_ptr reference counting (atomic, lock-free)
-     * - JobState transitions for worker synchronization
-     * - Weak self-reference for creating shared_ptrs in callbacks
+     * Lifetime is managed via atomic JobState transitions:
+     * - AVAILABLE: Ready for worker processing
+     * - WORKING: Worker is currently processing
+     * - DISCARDED: Connection closed, awaiting final cleanup
      * 
      * @param client_fd Client socket file descriptor
      * @param job_server Reference to the io_uring server
      * @param router HTTP router for request handling
      * @param http_server Pointer to HTTP server (for worker response queue)
      * @param max_request_size Maximum request size in bytes
-     * @return shared_ptr to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
+     * @return Raw pointer to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
      */
-    static std::shared_ptr<HttpConnectionJob> createFromPool(
+    static HttpConnectionJob* createFromPool(
         int client_fd, 
         Server& job_server,
         const HttpRouter& router,
@@ -213,7 +197,6 @@ public:
 
     /**
      * Start reading from the connection
-     * Must be called after the object is created and in a shared_ptr
      */
     void start();
 
@@ -230,14 +213,6 @@ public:
     void handleDataReceivedOnWorker(const char* data, ssize_t len);
     void handleReadError(int error);
     int getClientFd() const { return client_fd_; }
-    
-    /**
-     * Get shared_ptr to this job (for callbacks that need to keep job alive)
-     * Uses weak_ptr internally to avoid circular references
-     */
-    std::shared_ptr<HttpConnectionJob> getShared() {
-        return self_.lock();
-    }
     
     /**
      * Try to acquire job for worker processing
@@ -274,13 +249,6 @@ private:
         return state_.tryDiscard();
     }
     void continueReading();
-    
-    /**
-     * Set the weak_ptr to self (called after shared_ptr is created)
-     */
-    void setSelfReference(std::weak_ptr<HttpConnectionJob> self) {
-        self_ = std::move(self);
-    }
 
     int client_fd_;
     Server& job_server_;
@@ -293,9 +261,6 @@ private:
     
     // Atomic state machine for lock-free lifetime management
     JobStateMachine state_;
-    
-    // Weak reference to self for creating shared_ptr in callbacks
-    std::weak_ptr<HttpConnectionJob> self_;
     
     // Generation counter to detect ABA problem (memory reuse)
     // Incremented each time job is allocated from pool
