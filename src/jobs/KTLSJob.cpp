@@ -10,7 +10,7 @@
 // Define lock-free pool for KTLSJob
 // Size can be overridden at compile time via -DCDV_KTLS_POOL_SIZE=<n>
 #ifndef CDV_KTLS_POOL_SIZE
-#define CDV_KTLS_POOL_SIZE 1000
+#define CDV_KTLS_POOL_SIZE 5000
 #endif
 DEFINE_LOCKFREE_POOL(caduvelox::KTLSJob, CDV_KTLS_POOL_SIZE);
 

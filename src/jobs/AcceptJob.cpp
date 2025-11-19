@@ -8,7 +8,7 @@
 // Define lock-free pool for AcceptJob at global scope (overridable size)
 // Small default since usually only 1-2 active accept jobs per listening socket
 #ifndef CDV_ACCEPT_POOL_SIZE
-#define CDV_ACCEPT_POOL_SIZE 100
+#define CDV_ACCEPT_POOL_SIZE 1000
 #endif
 DEFINE_LOCKFREE_POOL(caduvelox::AcceptJob, CDV_ACCEPT_POOL_SIZE);
 

@@ -12,6 +12,9 @@ tls_server
 # Deployment configs with sensitive paths
 caduvelox.service
 
+# Benchmarks with server IPs
+benchmarks/
+
 *.pem
 # Object files
 *.o

@@ -119,7 +119,7 @@ class AsyncLogger::Impl {
     }
 
     std::unique_ptr<Logger> fDelegate;
-    NotifyingRingBuffer<LogMessage, 1024> fRingBuffer; // 1024 message buffer
+    NotifyingRingBuffer<LogMessage, 65536> fRingBuffer; // 65536 message buffer (64x increase for high load, power of 2)
     std::atomic<bool> fRunning;
     std::thread fWorkerThread;
 };
