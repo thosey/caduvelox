@@ -27,7 +27,7 @@ void FileLogger::logMessage(std::string_view msg) {
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()) % 1000;
         
-        file_ << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S")
+        file_ << std::put_time(std::gmtime(&time), "%Y-%m-%d %H:%M:%S")
               << '.' << std::setfill('0') << std::setw(3) << ms.count()
               << " [INFO] " << msg << std::endl;
         
@@ -45,7 +45,7 @@ void FileLogger::logError(std::string_view msg) {
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()) % 1000;
         
-        file_ << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S")
+        file_ << std::put_time(std::gmtime(&time), "%Y-%m-%d %H:%M:%S")
               << '.' << std::setfill('0') << std::setw(3) << ms.count()
               << " [ERROR] " << msg << std::endl;
         
