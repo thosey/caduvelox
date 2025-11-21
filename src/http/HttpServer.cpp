@@ -592,8 +592,8 @@ void HttpConnectionJob::processHttpRequestsOnWorker() {
             
             Logger::getInstance().logMessage("HttpConnectionJob: Response generated, status=" + std::to_string(response.status_code));
             
-            // Post response back to main thread for io_uring operations
-            postResponseFromWorker(response);
+            // Post response back to main thread for io_uring operations (move to avoid copy)
+            postResponseFromWorker(std::move(response));
         } else if (result == HttpParser::ParseResult::Incomplete) {
             // Need more data - wait for next read
             return;
@@ -614,7 +614,7 @@ void HttpConnectionJob::processHttpRequestsOnWorker() {
             error_response.setHeader("connection", "close");
             error_response.body = "Bad Request";
             
-            postResponseFromWorker(error_response);
+            postResponseFromWorker(std::move(error_response));
             return;
         }
     }
@@ -635,7 +635,7 @@ void HttpConnectionJob::handleHttpRequest(const HttpRequest& request) {
     sendResponse(response);
 }
 
-void HttpConnectionJob::postResponseFromWorker(const HttpResponse& response) {
+void HttpConnectionJob::postResponseFromWorker(HttpResponse response) {
     if (!http_server_) {
         Logger::getInstance().logError("HttpConnectionJob: No HttpServer reference, cannot post worker response");
         return;
@@ -644,10 +644,11 @@ void HttpConnectionJob::postResponseFromWorker(const HttpResponse& response) {
     Logger::getInstance().logMessage("HttpConnectionJob: Posting response from worker thread, status=" + 
                                    std::to_string(response.status_code));
     
-    // Create WorkerResponse and try to enqueue it (raw pointer pattern - zero allocation)
-    WorkerResponse wr(client_fd_, response, keep_alive_, this);
+    // Create WorkerResponse and enqueue it using lock-free MPMC queue
+    // Note: response is passed by value, then moved into WorkerResponse
+    WorkerResponse wr(client_fd_, std::move(response), keep_alive_, this);
     
-    if (!http_server_->getResponseQueue().try_push(std::move(wr))) {
+    if (!http_server_->getResponseQueue().enqueue(std::move(wr))) {
         Logger::getInstance().logError("HttpConnectionJob: Worker response queue full! Dropping response for fd=" + 
                                      std::to_string(client_fd_));
         return;
@@ -882,10 +883,9 @@ void HttpServer::signalWorkerResponse() {
 void HttpServer::processWorkerResponses() {
     int processed = 0;
     
-    // Process all pending responses from workers
-    while (auto maybe_response = response_queue_.try_pop()) {
-        WorkerResponse& wr = *maybe_response;
-        
+    // Process all pending responses from workers using lock-free MPMC queue
+    WorkerResponse wr;
+    while (response_queue_.dequeue(wr)) {
         // Check if connection is still valid (client_fd >= 0)
         if (!wr.connection_job || wr.connection_job->getClientFd() < 0) {
             Logger::getInstance().logMessage("HttpServer: Connection already closed for fd=" + 

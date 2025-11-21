@@ -12,7 +12,7 @@
 #include "caduvelox/http/HttpParser.hpp"
 #include "caduvelox/logger/Logger.hpp"
 #include "caduvelox/threading/AffinityWorkerPool.hpp"
-#include "caduvelox/util/SPSCQueue.hpp"
+#include "caduvelox/ring_buffer/VyukovRingBuffer.hpp"
 #include "caduvelox/util/EventFd.hpp"
 #include "caduvelox/util/WorkerResponse.hpp"
 #include "LockFreeMemoryPool.h"
@@ -82,7 +82,7 @@ public:
     /**
      * Get the response queue for worker threads to post responses
      */
-    SPSCQueue<WorkerResponse>& getResponseQueue() { return response_queue_; }
+    VyukovRingBuffer<WorkerResponse, 16384>& getResponseQueue() { return response_queue_; }
     
     /**
      * Signal that a worker has posted a response
@@ -99,7 +99,7 @@ private:
     
     // Worker thread support
     std::shared_ptr<AffinityWorkerPool> worker_pool_;
-    SPSCQueue<WorkerResponse> response_queue_;  // Worker threads -> io_uring thread
+    VyukovRingBuffer<WorkerResponse, 16384> response_queue_;  // Lock-free MPMC queue: Worker threads -> io_uring thread (16K slots)
     std::unique_ptr<EventFd> worker_event_fd_;  // For waking up io_uring thread
     EventFdMonitorJob* eventfd_monitor_job_ = nullptr; // Pool-allocated job to monitor eventfd
 
@@ -207,7 +207,7 @@ public:
 private:
 
     void startReading();
-    void postResponseFromWorker(const HttpResponse& response);
+    void postResponseFromWorker(HttpResponse response);  // Takes by value for proper move semantics
     void processHttpRequests();
     void processHttpRequestsOnWorker();
     void handleHttpRequest(const HttpRequest& request);
