@@ -74,9 +74,9 @@ int main(int argc, char** argv) {
             Logger::setGlobalLogger(console_logger.get());
         }
 
-        // Initialize job server
+        // Initialize job server with larger queue depth for high concurrency
         job_server = std::make_unique<Server>();
-        if (!job_server->init(256)) {
+        if (!job_server->init(4096)) {
             std::cerr << "Failed to initialize Server" << std::endl;
             return 1;
         }
