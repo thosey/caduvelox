@@ -7,9 +7,10 @@
 #include <cerrno>
 #include <string>
 
-// Define lock-free pool for WriteJob at global scope
+// Define cache-aligned lock-free pool for WriteJob (extremely hot path)
 // Large pool since we can have many concurrent write operations
-DEFINE_LOCKFREE_POOL(caduvelox::WriteJob, 10000);
+// Cache alignment prevents false sharing between worker threads
+DEFINE_LOCKFREE_POOL_CACHE_ALIGNED(caduvelox::WriteJob, 10000);
 
 namespace {
     void cleanupWriteJob(caduvelox::IoJob* job) {

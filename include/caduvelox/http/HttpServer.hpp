@@ -231,9 +231,10 @@ private:
 // Type alias for templated MultishotRecvJob (avoids comma issues in macro)
 using HttpMultishotRecvJob = caduvelox::MultishotRecvJob<caduvelox::HttpConnectionRecvHandler>;
 
-// Define lock-free pools for HTTP server jobs at global scope
+// Define cache-aligned lock-free pools for HTTP server jobs (hot paths)
 // Large pool for HTTP connection jobs since we can have many concurrent connections
-DEFINE_LOCKFREE_POOL(caduvelox::HttpConnectionJob, 10000);
+// Cache alignment prevents false sharing between worker threads
+DEFINE_LOCKFREE_POOL_CACHE_ALIGNED(caduvelox::HttpConnectionJob, 10000);
 
-// Pool for templated MultishotRecvJob with HttpConnectionRecvHandler
-DEFINE_LOCKFREE_POOL(HttpMultishotRecvJob, 10000);
+// Pool for templated MultishotRecvJob with HttpConnectionRecvHandler (also hot)
+DEFINE_LOCKFREE_POOL_CACHE_ALIGNED(HttpMultishotRecvJob, 10000);
