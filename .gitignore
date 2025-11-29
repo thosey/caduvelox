@@ -9,6 +9,10 @@ server_tests
 http_server
 tls_server
 
+# Private notes with deployment details
+private_notes
+private_notes/
+
 # Deployment configs with sensitive paths
 caduvelox.service
 

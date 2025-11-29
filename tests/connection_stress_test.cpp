@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "caduvelox/Server.hpp"
-#include "caduvelox/http/HttpServer.hpp"
+#include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
 #include <thread>
 #include <chrono>
@@ -26,7 +26,7 @@ protected:
         ASSERT_TRUE(job_server_.init(128));
         
         // Create HTTP server (without worker pool for simplicity)
-        http_server_ = std::make_unique<HttpServer>(job_server_);
+        http_server_ = std::make_unique<SingleRingHttpServer>(job_server_);
         
         // Add a simple test route
         http_server_->addRoute("GET", "/", [](const HttpRequest& req, HttpResponse& res) {
@@ -75,7 +75,7 @@ protected:
     }
     
     Server job_server_;
-    std::unique_ptr<HttpServer> http_server_;
+    std::unique_ptr<SingleRingHttpServer> http_server_;
     std::thread event_loop_thread_;
 };
 
@@ -324,7 +324,7 @@ protected:
         ASSERT_TRUE(job_server_.init(128));
         
         // Create HTTPS server with KTLS
-        http_server_ = std::make_unique<HttpServer>(job_server_);
+        http_server_ = std::make_unique<SingleRingHttpServer>(job_server_);
         
         // Add a simple test route
         http_server_->addRoute("GET", "/", [](const HttpRequest& req, HttpResponse& res) {
@@ -373,7 +373,7 @@ protected:
     }
     
     Server job_server_;
-    std::unique_ptr<HttpServer> http_server_;
+    std::unique_ptr<SingleRingHttpServer> http_server_;
     std::thread event_loop_thread_;
 };
 

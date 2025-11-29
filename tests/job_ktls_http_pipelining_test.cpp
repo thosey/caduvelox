@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "caduvelox/Server.hpp"
-#include "caduvelox/http/HttpServer.hpp"
+#include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
 #include <thread>
 #include <chrono>
@@ -113,7 +113,7 @@ protected:
         ASSERT_TRUE(job_server.init(128));
         
         // Create HTTPS server
-        https_server = std::make_unique<caduvelox::HttpServer>(job_server);
+        https_server = std::make_unique<caduvelox::SingleRingHttpServer>(job_server);
         
         // Add routes
         https_server->addRoute("GET", "^/r1$", [](const caduvelox::HttpRequest& req, caduvelox::HttpResponse& res){
@@ -164,7 +164,7 @@ protected:
     static int test_counter;
 
     caduvelox::Server job_server;
-    std::unique_ptr<caduvelox::HttpServer> https_server;
+    std::unique_ptr<caduvelox::SingleRingHttpServer> https_server;
     std::thread server_thread;
     uint16_t test_port;
 };

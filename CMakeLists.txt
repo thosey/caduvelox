@@ -56,6 +56,7 @@ message(STATUS "OpenSSL libraries: ${OPENSSL_LIBRARIES}")
 add_library(caduvelox
     # Core infrastructure
     src/Server.cpp
+    src/ServiceRing.cpp
     src/logging/Logger.cpp
     src/logging/AsyncLogger.cpp
     src/logging/ConsoleLogger.cpp
@@ -72,7 +73,8 @@ add_library(caduvelox
     # HTTP layer (server, routing, file serving)
     src/http/HttpParser.cpp
     src/http/HttpRouter.cpp
-    src/http/HttpServer.cpp
+    src/http/HttpServer.cpp             # Multi-ring coordinator (public API)
+    src/http/SingleRingHttpServer.cpp   # Internal single-ring implementation
     src/http/HttpConnectionRecvHandler.cpp
     src/http/HTTPFileJob.cpp
     src/threading/SimpleWorkerPool.cpp

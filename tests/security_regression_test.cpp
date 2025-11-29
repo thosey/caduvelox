@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 #include "caduvelox/Server.hpp"
-#include "caduvelox/http/HttpServer.hpp"
+#include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/http/HttpParser.hpp"
 #include "caduvelox/http/HttpTypes.hpp"
 #include "caduvelox/threading/AffinityWorkerPool.hpp"
@@ -168,7 +168,7 @@ TEST_F(SecurityRegressionTest, ServerShutdownWithoutCrash) {
         ASSERT_TRUE(server.init(128));
         
         auto worker_pool = std::make_shared<AffinityWorkerPool>(2);
-        HttpServer http_server(server, worker_pool);
+        SingleRingHttpServer http_server(server, worker_pool);
         
         http_server.addRoute("GET", "/test", [](const HttpRequest& req, HttpResponse& res) {
             res.status_code = 200;
@@ -212,7 +212,7 @@ TEST_F(SecurityRegressionTest, ServerShutdownWithWorkerPool) {
     ASSERT_TRUE(server.init(128));
     
     auto worker_pool = std::make_shared<AffinityWorkerPool>(4);
-    HttpServer http_server(server, worker_pool);
+    SingleRingHttpServer http_server(server, worker_pool);
     
     int request_count = 0;
     http_server.addRoute("GET", "/count", [&request_count](const HttpRequest& req, HttpResponse& res) {
@@ -255,7 +255,7 @@ TEST_F(SecurityRegressionTest, RouterHandlesBasicRoutes) {
     Server server;
     ASSERT_TRUE(server.init(128));
     
-    HttpServer http_server(server);
+    SingleRingHttpServer http_server(server);
     
     bool route1_called = false;
     bool route2_called = false;

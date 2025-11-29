@@ -11,7 +11,7 @@
  */
 
 #include <gtest/gtest.h>
-#include "caduvelox/http/HttpServer.hpp"
+#include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/Server.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
 #include <thread>
@@ -48,7 +48,7 @@ protected:
         ASSERT_TRUE(job_server_.init(128));
         
         // Create HTTPS server
-        https_server_ = std::make_unique<HttpServer>(job_server_);
+        https_server_ = std::make_unique<SingleRingHttpServer>(job_server_);
         
         // Set up routes like static_https_server
         setupRoutes();
@@ -316,7 +316,7 @@ protected:
     }
     
     Server job_server_;
-    std::unique_ptr<HttpServer> https_server_;
+    std::unique_ptr<SingleRingHttpServer> https_server_;
     std::thread event_loop_thread_;
     fs::path test_dir_;
     std::string cert_path_;

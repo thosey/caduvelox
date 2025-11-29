@@ -12,7 +12,7 @@
 #include <errno.h>
 
 #include "caduvelox/Server.hpp"
-#include "caduvelox/http/HttpServer.hpp"
+#include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
 
 namespace {
@@ -78,7 +78,7 @@ protected:
         ASSERT_TRUE(job_server.init(128));
         
         // Create HTTP server
-        http_server = std::make_unique<caduvelox::HttpServer>(job_server);
+        http_server = std::make_unique<caduvelox::SingleRingHttpServer>(job_server);
         
         // Add routes
         http_server->addRoute("GET", "^/r1$", [](const caduvelox::HttpRequest& req, caduvelox::HttpResponse& res){
@@ -142,7 +142,7 @@ protected:
     static int test_counter;
 
     caduvelox::Server job_server;
-    std::unique_ptr<caduvelox::HttpServer> http_server;
+    std::unique_ptr<caduvelox::SingleRingHttpServer> http_server;
     std::thread server_thread;
     uint16_t test_port;
 };
