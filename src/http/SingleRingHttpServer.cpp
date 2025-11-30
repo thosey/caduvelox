@@ -36,32 +36,16 @@ SingleRingHttpServer::SingleRingHttpServer(Server& job_server, std::shared_ptr<A
     , ssl_ctx_(nullptr)
     , worker_pool_(std::move(worker_pool))
 {
-    // Create default AffinityWorkerPool if not provided
-    if (!worker_pool_) {
-        worker_pool_ = std::make_shared<AffinityWorkerPool>(std::thread::hardware_concurrency());
+    // Worker pool is now optional - if not provided, HTTP processing happens inline on io_uring thread
+    // This is the recommended mode for high performance (no thread ping-pong)
+    if (worker_pool_) {
+        // Register worker pool with Server for MultishotRecvJob access
+        job_server_.setAffinityWorkerPool(worker_pool_);
     }
-    
-    // Register worker pool with Server for MultishotRecvJob access
-    job_server_.setAffinityWorkerPool(worker_pool_);
-    
-    // setupWorkerEventFd() is called in listen() / listenKTLS(), not here
 }
 
 SingleRingHttpServer::~SingleRingHttpServer() {
     stop();
-    
-    // Close worker eventfd - this should happen AFTER io_uring loop has stopped
-    // No completion will be delivered because the loop is not running
-    if (worker_event_fd_) {
-        worker_event_fd_.reset();
-    }
-    
-    // If eventfd_monitor_job_ still exists, it means the error callback never ran
-    // Free it manually to prevent pool leak
-    if (eventfd_monitor_job_) {
-        EventFdMonitorJob::freePoolAllocated(eventfd_monitor_job_);
-        eventfd_monitor_job_ = nullptr;
-    }
     
     if (ssl_ctx_) {
         KTLSContextHelper::freeContext(ssl_ctx_);
@@ -99,11 +83,6 @@ bool SingleRingHttpServer::listen(int port, const std::string& bind_addr) {
     running_ = true;
     ktls_enabled_ = false;
     Logger::getInstance().logMessage("HttpServer: Listening on " + bind_addr + ":" + std::to_string(port));
-
-    // Setup eventfd for worker notifications if we have a worker pool
-    if (worker_pool_ && !worker_event_fd_) {
-        setupWorkerEventFd();
-    }
 
     // Start accepting connections
     startAccepting();
@@ -144,11 +123,6 @@ bool SingleRingHttpServer::listenKTLS(int port, const std::string& cert_path, co
     ktls_enabled_ = true;
     Logger::getInstance().logMessage("HttpServer: KTLS listening on " + bind_addr + ":" + std::to_string(port));
 
-    // Setup eventfd for worker notifications if we have a worker pool
-    if (worker_pool_ && !worker_event_fd_) {
-        setupWorkerEventFd();
-    }
-
     // Start accepting connections
     startAccepting();
     
@@ -167,9 +141,6 @@ void SingleRingHttpServer::stop() {
         close(server_fd_);
         server_fd_ = -1;
     }
-    
-    // Note: Do NOT close worker_event_fd_ here!
-    // It will be closed in the destructor after io_uring loop has fully stopped.
 
     Logger::getInstance().logMessage("HttpServer: Server stopped");
 }
@@ -436,21 +407,12 @@ void HttpConnectionJob::startReading() {
     // Create handler instance (encapsulates context + callbacks)
     HttpConnectionRecvHandler handler{this};
     
-    // Check if we have affinity workers for zero-copy processing
-    auto worker_pool = job_server_.getAffinityWorkerPool();
-    
-    if (!worker_pool) {
-        Logger::getInstance().logError("HttpConnectionJob: AffinityWorkerPool required for MultishotRecvJob");
-        reading_active_ = false;
-        return;
-    }
-    
-    // Zero-copy path: use token-based MultishotRecvJob for worker thread processing
+    // Zero-copy path: use token-based MultishotRecvJob for inline processing on io_uring thread
     // Template policy pattern - type-safe, fully inlineable callbacks
     auto* read_job = MultishotRecvJob<HttpConnectionRecvHandler>::createFromPool(
         client_fd_,
         handler,              // Handler instance (no void* casting!)
-        worker_pool.get()     // void* worker_pool_ptr for zero-copy dispatch
+        nullptr               // worker_pool_ptr not needed for inline processing
     );
     
     if (!read_job) {
@@ -506,32 +468,6 @@ void HttpConnectionJob::handleDataReceived(const char* data, ssize_t len) {
     processHttpRequests();
 }
 
-void HttpConnectionJob::handleDataReceivedOnWorker(const char* data, ssize_t len) {
-    if (len == 0) {
-        // EOF - client disconnected, cleanup handled by connection state machine
-        Logger::getInstance().logMessage("HttpConnectionJob: Client disconnected on worker fd=" + std::to_string(client_fd_));
-        return;
-    }
-
-    if (len < 0) {
-        Logger::getInstance().logError("HttpConnectionJob: Read error on worker fd=" + std::to_string(client_fd_) + 
-                                     ", error=" + std::to_string(-len));
-        return;
-    }
-
-    // Check buffer size limit
-    if (request_buffer_.size() + len > max_request_size_) {
-        Logger::getInstance().logError("HttpConnectionJob: Request too large on worker, closing connection");
-        return;
-    }
-
-    // Append data to request buffer (thread-safe since each connection has affinity to one worker)
-    request_buffer_.append(data, len);
-    
-    // Process HTTP requests on worker thread
-    processHttpRequestsOnWorker();
-}
-
 void HttpConnectionJob::handleReadError(int error) {
     Logger::getInstance().logError("HttpConnectionJob: Read error fd=" + std::to_string(client_fd_) + 
                                  ", error=" + std::to_string(error));
@@ -566,60 +502,6 @@ void HttpConnectionJob::processHttpRequests() {
     }
 }
 
-void HttpConnectionJob::processHttpRequestsOnWorker() {
-    while (!request_buffer_.empty()) {
-        HttpRequest request;
-        size_t bytes_consumed = 0;
-        
-        auto result = HttpParser::parse_request(
-            request_buffer_, 
-            request, 
-            bytes_consumed
-        );
-
-        if (result == HttpParser::ParseResult::Success) {
-            // Complete request parsed on worker thread
-            request_buffer_.erase(0, bytes_consumed);
-            
-            Logger::getInstance().logMessage("HttpConnectionJob: Processing on worker " + request.method + " " + request.path);
-            
-            // Determine if we should keep connection alive after this response
-            keep_alive_ = shouldKeepAlive(request);
-            
-            // Process HTTP request directly on worker thread
-            HttpResponse response;
-            router_.dispatch(request, response);
-            
-            Logger::getInstance().logMessage("HttpConnectionJob: Response generated, status=" + std::to_string(response.status_code));
-            
-            // Post response back to main thread for io_uring operations (move to avoid copy)
-            postResponseFromWorker(std::move(response));
-        } else if (result == HttpParser::ParseResult::Incomplete) {
-            // Need more data - wait for next read
-            return;
-        } else {
-            // BadRequest - malformed input
-            Logger::getInstance().logError("HttpConnectionJob: Malformed HTTP request on worker, closing connection fd=" + 
-                                         std::to_string(client_fd_));
-            
-            // Fatal error - force connection close and clear poisoned buffer
-            keep_alive_ = false;
-            request_buffer_.clear();  // Drop invalid bytes to prevent reprocessing
-            
-            // Post 400 Bad Request response back to main thread
-            HttpResponse error_response;
-            error_response.status_code = 400;
-            error_response.status_text = "Bad Request";
-            error_response.setHeader("content-type", "text/plain");
-            error_response.setHeader("connection", "close");
-            error_response.body = "Bad Request";
-            
-            postResponseFromWorker(std::move(error_response));
-            return;
-        }
-    }
-}
-
 void HttpConnectionJob::handleHttpRequest(const HttpRequest& request) {
     Logger::getInstance().logMessage("HttpConnectionJob: Processing " + request.method + " " + request.path);
     
@@ -633,31 +515,6 @@ void HttpConnectionJob::handleHttpRequest(const HttpRequest& request) {
     Logger::getInstance().logMessage("HttpConnectionJob: Response generated, status=" + std::to_string(response.status_code));
     
     sendResponse(response);
-}
-
-void HttpConnectionJob::postResponseFromWorker(HttpResponse response) {
-    if (!http_server_) {
-        Logger::getInstance().logError("HttpConnectionJob: No HttpServer reference, cannot post worker response");
-        return;
-    }
-    
-    Logger::getInstance().logMessage("HttpConnectionJob: Posting response from worker thread, status=" + 
-                                   std::to_string(response.status_code));
-    
-    // Create WorkerResponse and enqueue it using lock-free MPMC queue
-    // Note: response is passed by value, then moved into WorkerResponse
-    WorkerResponse wr(client_fd_, std::move(response), keep_alive_, this);
-    
-    if (!http_server_->getResponseQueue().enqueue(std::move(wr))) {
-        Logger::getInstance().logError("HttpConnectionJob: Worker response queue full! Dropping response for fd=" + 
-                                     std::to_string(client_fd_));
-        return;
-    }
-    
-    // Signal the io_uring thread to process responses
-    http_server_->signalWorkerResponse();
-    
-    Logger::getInstance().logMessage("HttpConnectionJob: Worker response posted successfully");
 }
 
 void HttpConnectionJob::sendResponse(const HttpResponse& response) {
@@ -808,77 +665,8 @@ void HttpConnectionJob::continueReading() {
 }
 
 // ============================================================================
-// HttpServer Worker Response Handling
+// HttpServer Configuration
 // ============================================================================
-
-void SingleRingHttpServer::setupWorkerEventFd() {
-    try {
-        // Create eventfd for worker notifications
-        worker_event_fd_ = std::make_unique<EventFd>(false, true);  // Not semaphore, nonblocking
-        
-        Logger::getInstance().logMessage("HttpServer: Worker eventfd created, fd=" + 
-                                       std::to_string(worker_event_fd_->fd()));
-        
-        // Create a pool-allocated EventFdMonitorJob to monitor the eventfd
-        eventfd_monitor_job_ = EventFdMonitorJob::createFromPool(
-            worker_event_fd_->fd(),
-            [this](int fd, uint64_t counter) {
-                // EventFd was signaled - process all pending worker responses
-                Logger::getInstance().logMessage("HttpServer: EventFD signaled, counter=" + std::to_string(counter));
-                processWorkerResponses();
-                
-                // Resubmit the read to continue monitoring
-                if (eventfd_monitor_job_ && worker_event_fd_) {
-                    struct io_uring_sqe* sqe = job_server_.registerJob(eventfd_monitor_job_);
-                    if (sqe) {
-                        eventfd_monitor_job_->prepareSqe(sqe);
-                        job_server_.submit();
-                    }
-                }
-            },
-            [this](int fd, int error) {
-                // Error callback - eventfd closed or error occurred
-                if (error != 0) {
-                    Logger::getInstance().logError("HttpServer: Worker eventfd error: " + std::to_string(error));
-                }
-                // Free the job before clearing pointer to prevent pool leak
-                if (eventfd_monitor_job_) {
-                    EventFdMonitorJob::freePoolAllocated(eventfd_monitor_job_);
-                    eventfd_monitor_job_ = nullptr;
-                }
-            }
-        );
-        
-        if (!eventfd_monitor_job_) {
-            Logger::getInstance().logError("HttpServer: Failed to allocate EventFdMonitorJob from pool");
-            return;
-        }
-        
-        // Start monitoring (will be triggered when workers signal)
-        struct io_uring_sqe* sqe = job_server_.registerJob(eventfd_monitor_job_);
-        if (sqe) {
-            // EventFdMonitorJob handles setup (single-shot read of 8-byte counter)
-            eventfd_monitor_job_->prepareSqe(sqe);
-            job_server_.submit();
-            
-            Logger::getInstance().logMessage("HttpServer: Worker eventfd monitoring started");
-        } else {
-            Logger::getInstance().logError("HttpServer: Failed to register eventfd monitor job");
-        }
-    } catch (const std::exception& e) {
-        Logger::getInstance().logError("HttpServer: Failed to setup worker eventfd: " + std::string(e.what()));
-    }
-}
-
-void SingleRingHttpServer::signalWorkerResponse() {
-    if (worker_event_fd_) {
-        try {
-            worker_event_fd_->signal();
-        } catch (const std::exception& e) {
-            Logger::getInstance().logError("HttpServer: Failed to signal eventfd: " + std::string(e.what()));
-        }
-    }
-}
 
 void SingleRingHttpServer::setRouter(const HttpRouter& router) {
     router_ = router;
@@ -895,54 +683,15 @@ bool SingleRingHttpServer::listenOnFd(int server_fd) {
     
     Logger::getInstance().logMessage("HttpServer: Listening on fd=" + std::to_string(server_fd));
     
-    // Setup eventfd for worker notifications if we have a worker pool
-    if (worker_pool_ && !worker_event_fd_) {
-        setupWorkerEventFd();
-    }
-    
     // Start accepting connections
     startAccepting();
     
     return true;
 }
 
-void SingleRingHttpServer::processWorkerResponses() {
-    int processed = 0;
-    
-    // Process all pending responses from workers using lock-free MPMC queue
-    WorkerResponse wr;
-    while (response_queue_.dequeue(wr)) {
-        // Check if connection is still valid (client_fd >= 0)
-        if (!wr.connection_job || wr.connection_job->getClientFd() < 0) {
-            Logger::getInstance().logMessage("HttpServer: Connection already closed for fd=" + 
-                                           std::to_string(wr.client_fd));
-            continue;
-        }
-        
-        // Send the response via the connection job
-        wr.connection_job->sendResponse(wr.response);
-        processed++;
-    }
-    
-    if (processed > 0) {
-        Logger::getInstance().logMessage("HttpServer: Processed " + std::to_string(processed) + 
-                                       " worker responses");
-    }
-    
-    // Consume the eventfd counter
-    if (worker_event_fd_) {
-        worker_event_fd_->try_consume();
-    }
-}
-
 void SingleRingHttpServer::setAffinityWorkerPool(std::shared_ptr<AffinityWorkerPool> pool) {
     worker_pool_ = std::move(pool);
     job_server_.setAffinityWorkerPool(worker_pool_);
-    
-    // Setup eventfd for worker notifications if not already done
-    if (!worker_event_fd_) {
-        setupWorkerEventFd();
-    }
 }
 
 } // namespace caduvelox

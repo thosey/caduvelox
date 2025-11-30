@@ -72,12 +72,9 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
             return false;
         }
         
-        // Create a minimal worker pool for this ring (1 thread - just for compatibility)
-        // In future, refactor HttpConnectionRecvHandler to process directly on io_uring thread
-        auto worker_pool = std::make_shared<AffinityWorkerPool>(1);
-        
-        // Create internal SingleRingHttpServer for this ring with minimal worker pool
-        auto http_server = std::make_unique<SingleRingHttpServer>(ring->getServer(), worker_pool);
+        // Create internal SingleRingHttpServer for this ring WITHOUT worker pool
+        // HTTP processing happens inline on io_uring thread for maximum performance
+        auto http_server = std::make_unique<SingleRingHttpServer>(ring->getServer(), nullptr);
         
         // Share the router (read-only after setup)
         http_server->setRouter(router_);

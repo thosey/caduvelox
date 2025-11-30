@@ -6,15 +6,11 @@
 #include "caduvelox/jobs/MultishotRecvJob.hpp"
 #include "caduvelox/http/HttpConnectionRecvHandler.hpp"
 #include "caduvelox/jobs/WriteJob.hpp"
-#include "caduvelox/jobs/EventFdMonitorJob.hpp"
 #include "caduvelox/http/HttpRouter.hpp"
 #include "caduvelox/http/HttpTypes.hpp"
 #include "caduvelox/http/HttpParser.hpp"
 #include "caduvelox/logger/Logger.hpp"
 #include "caduvelox/threading/AffinityWorkerPool.hpp"
-#include "caduvelox/ring_buffer/VyukovRingBuffer.hpp"
-#include "caduvelox/util/EventFd.hpp"
-#include "caduvelox/util/WorkerResponse.hpp"
 #include "LockFreeMemoryPool.h"
 #include <openssl/ssl.h>
 #include <memory>
@@ -80,16 +76,6 @@ public:
     void setAffinityWorkerPool(std::shared_ptr<AffinityWorkerPool> pool);
     
     /**
-     * Get the response queue for worker threads to post responses
-     */
-    VyukovRingBuffer<WorkerResponse, 16384>& getResponseQueue() { return response_queue_; }
-    
-    /**
-     * Signal that a worker has posted a response
-     */
-    void signalWorkerResponse();
-
-    /**
      * Set the router (for multi-ring server where router is shared)
      */
     void setRouter(const HttpRouter& router);
@@ -116,9 +102,6 @@ private:
     
     // Worker thread support
     std::shared_ptr<AffinityWorkerPool> worker_pool_;
-    VyukovRingBuffer<WorkerResponse, 16384> response_queue_;  // Lock-free MPMC queue: Worker threads -> io_uring thread (16K slots)
-    std::unique_ptr<EventFd> worker_event_fd_;  // For waking up io_uring thread
-    EventFdMonitorJob* eventfd_monitor_job_ = nullptr; // Pool-allocated job to monitor eventfd
 
     /**
      * Start accepting connections
@@ -149,16 +132,6 @@ private:
      * Common socket setup helper
      */
     int createServerSocket(int port, const std::string& bind_addr);
-    
-    /**
-     * Setup eventfd monitoring for worker responses
-     */
-    void setupWorkerEventFd();
-    
-    /**
-     * Process pending worker responses
-     */
-    void processWorkerResponses();
 };
 
 /**
@@ -179,8 +152,6 @@ private:
  * Manages HTTP request/response lifecycle for a single client connection
  */
 class HttpConnectionJob : public IoJob {
-    // Allow HttpServer to call sendResponse for worker responses
-    friend class SingleRingHttpServer;
     
 public:
     /**
@@ -189,7 +160,7 @@ public:
      * @param client_fd Client socket file descriptor
      * @param job_server Reference to the io_uring server
      * @param router HTTP router for request handling
-     * @param http_server Pointer to HTTP server (for worker response queue)
+     * @param http_server Pointer to HTTP server (currently unused, kept for API compatibility)
      * @param max_request_size Maximum request size in bytes
      * @return Pointer to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
      */
@@ -217,16 +188,13 @@ public:
 
     // Public for stateless callback handlers (called by MultishotRecvJob)
     void handleDataReceived(const char* data, ssize_t len);
-    void handleDataReceivedOnWorker(const char* data, ssize_t len);
     void handleReadError(int error);
     int getClientFd() const { return client_fd_; }
 
 private:
 
     void startReading();
-    void postResponseFromWorker(HttpResponse response);  // Takes by value for proper move semantics
     void processHttpRequests();
-    void processHttpRequestsOnWorker();
     void handleHttpRequest(const HttpRequest& request);
     void sendResponse(const HttpResponse& response);
     void closeConnection();
@@ -236,7 +204,7 @@ private:
     int client_fd_;
     Server& job_server_;
     HttpRouter router_;
-    SingleRingHttpServer* http_server_;  // For posting worker responses
+    SingleRingHttpServer* http_server_;  // Currently unused, kept for API compatibility
     std::string request_buffer_;
     size_t max_request_size_;
     bool reading_active_;
