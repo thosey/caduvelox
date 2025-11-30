@@ -178,8 +178,8 @@ void SingleRingHttpServer::startAccepting() {
         job_server_.submit();
     } else {
         Logger::getInstance().logError("HttpServer: Failed to register AcceptJob");
-        // Free the job since we couldn't register it
-        delete accept_job;
+        // CRITICAL: Use pool-aware free, not delete
+        AcceptJob::freePoolAllocated(accept_job);
     }
 }
 
@@ -435,6 +435,8 @@ void HttpConnectionJob::startReading() {
         job_server_.submit();
     } else {
         Logger::getInstance().logError("HttpConnectionJob: Failed to register ReadJob");
+        // CRITICAL: Free the pool-allocated job to prevent leak
+        MultishotRecvJob<HttpConnectionRecvHandler>::freePoolAllocated(read_job);
         reading_active_ = false;
     }
 }
