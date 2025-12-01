@@ -8,7 +8,7 @@ namespace caduvelox {
 /**
  * RAII wrapper for io_uring provided buffers that automatically recycles
  * the buffer when processing is complete. Enables zero-copy data processing
- * by passing provided buffers directly to worker threads.
+ * by passing provided buffers directly for inline processing.
  */
 class ProvidedBufferToken {
 public:

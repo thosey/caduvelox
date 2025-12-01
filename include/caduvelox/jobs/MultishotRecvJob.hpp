@@ -15,15 +15,13 @@ namespace caduvelox {
  * Concept: ResponseHandler for MultishotRecvJob
  * 
  * A valid handler must provide:
- * - onDataToken(std::shared_ptr<ProvidedBufferToken> token) for zero-copy processing
+ * - onDataToken(ProvidedBufferToken token) for zero-copy processing
  * - onError(int error) for error handling
  */
 template<typename H>
-concept ResponseHandler = requires(H handler, 
-                                   std::shared_ptr<ProvidedBufferToken> token,
-                                   int error) {
-    // Required: zero-copy token processing
-    { handler.onDataToken(token) } -> std::same_as<void>;
+concept ResponseHandler = requires(H handler, int error) {
+    // Required: zero-copy token processing (move-only type, passed by value)
+    { handler.onDataToken(std::declval<ProvidedBufferToken&&>()) } -> std::same_as<void>;
     
     // Required: error handling
     { handler.onError(error) } -> std::same_as<void>;
@@ -40,14 +38,14 @@ concept ResponseHandler = requires(H handler,
  * - Zero-copy buffer token passing for inline processing
  * 
  * Handler Requirements:
- * - void onDataToken(std::shared_ptr<ProvidedBufferToken> token)
+ * - void onDataToken(ProvidedBufferToken token)
  * - void onError(int error)
  * 
  * Example Handler:
  * struct HttpConnectionHandler {
  *     HttpConnectionJob* connection;
- *     void onDataToken(std::shared_ptr<ProvidedBufferToken> token) {
- *         connection->handleDataReceivedToken(token);
+ *     void onDataToken(ProvidedBufferToken token) {
+ *         connection->handleDataReceivedToken(std::move(token));
  *     }
  *     void onError(int error) {
  *         connection->handleReadError(error);
@@ -161,7 +159,8 @@ std::optional<IoJob::CleanupCallback> MultishotRecvJob<Handler>::handleCompletio
     }
     
     // Zero-copy path: create token for inline processing
-    auto token = std::make_shared<ProvidedBufferToken>(
+    // Token is moved to handler, ensuring RAII cleanup even on exceptions
+    ProvidedBufferToken token(
         [buffer_coordinator](unsigned buf_id) {
             buffer_coordinator->recycleBuffer(buf_id);
         },

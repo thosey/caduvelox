@@ -13,10 +13,10 @@ void HttpConnectionRecvHandler::onError(int error) {
 }
 
 // Zero-copy token processing (inline on io_uring thread)
-void HttpConnectionRecvHandler::onDataToken(std::shared_ptr<ProvidedBufferToken> token) {
+void HttpConnectionRecvHandler::onDataToken(ProvidedBufferToken token) {
     // Check if connection is still valid
     if (!connection) {
-        return;
+        return;  // Token destructor will recycle buffer
     }
     
     // OPTIMIZATION: Process HTTP request directly on io_uring thread
@@ -36,9 +36,10 @@ void HttpConnectionRecvHandler::onDataToken(std::shared_ptr<ProvidedBufferToken>
     //
     // Mitigation:
     // - Keep HTTP handlers fast (< 100μs)
-    // - For slow operations, use async I/O (io_uring for disk, async network)
+    // For slow operations, use async I/O (io_uring for disk, async network)
     // - Static file serving is perfect for this (just io_uring sendfile)
-    connection->handleDataReceived(token->data(), token->size());
+    connection->handleDataReceived(token.data(), token.size());
+    // Token automatically recycled when function returns
 }
 
 } // namespace caduvelox

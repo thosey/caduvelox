@@ -19,7 +19,7 @@ struct HttpConnectionRecvHandler {
     void onError(int error);
     
     // Zero-copy token processing (inline on io_uring thread)
-    void onDataToken(std::shared_ptr<ProvidedBufferToken> token);
+    void onDataToken(ProvidedBufferToken token);
 };
 
 } // namespace caduvelox
