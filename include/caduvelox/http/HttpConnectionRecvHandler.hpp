@@ -5,13 +5,12 @@
 
 namespace caduvelox {
 
-// Forward declarations
+// Forward declaration
 class HttpConnectionJob;
-class AffinityWorkerPool;
 
 /**
- * Handler for HttpConnectionJob multishot recv operations with affinity workers
- * Uses raw pointer - worker thread will use tryAcquire/tryRelease for safety
+ * Handler for HttpConnectionJob multishot recv operations with inline processing
+ * Uses raw pointer - connection job handles lifecycle
  */
 struct HttpConnectionRecvHandler {
     HttpConnectionJob* connection;  // Raw pointer - protected by atomic state machine
@@ -19,8 +18,8 @@ struct HttpConnectionRecvHandler {
     // Error handling
     void onError(int error);
     
-    // Zero-copy token processing (with worker threads)
-    void onDataToken(std::shared_ptr<ProvidedBufferToken> token, void* worker_pool_ptr);
+    // Zero-copy token processing (inline on io_uring thread)
+    void onDataToken(std::shared_ptr<ProvidedBufferToken> token);
 };
 
 } // namespace caduvelox

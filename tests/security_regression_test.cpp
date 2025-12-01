@@ -11,7 +11,6 @@
 #include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/http/HttpParser.hpp"
 #include "caduvelox/http/HttpTypes.hpp"
-#include "caduvelox/threading/AffinityWorkerPool.hpp"
 #include <thread>
 #include <chrono>
 
@@ -167,8 +166,7 @@ TEST_F(SecurityRegressionTest, ServerShutdownWithoutCrash) {
         Server server;
         ASSERT_TRUE(server.init(128));
         
-        auto worker_pool = std::make_shared<AffinityWorkerPool>(2);
-        SingleRingHttpServer http_server(server, worker_pool);
+        SingleRingHttpServer http_server(server);
         
         http_server.addRoute("GET", "/test", [](const HttpRequest& req, HttpResponse& res) {
             res.status_code = 200;
@@ -204,15 +202,13 @@ TEST_F(SecurityRegressionTest, ServerShutdownWithoutCrash) {
     SUCCEED() << "Server shut down cleanly 3 times without use-after-free";
 }
 
-TEST_F(SecurityRegressionTest, ServerShutdownWithWorkerPool) {
-    // Specifically test shutdown with active worker pool
-    // This tests EventFdMonitorJob cleanup ordering
+TEST_F(SecurityRegressionTest, ServerShutdownCleanly) {
+    // Test clean shutdown with inline processing
     
     Server server;
     ASSERT_TRUE(server.init(128));
     
-    auto worker_pool = std::make_shared<AffinityWorkerPool>(4);
-    SingleRingHttpServer http_server(server, worker_pool);
+    SingleRingHttpServer http_server(server);
     
     int request_count = 0;
     http_server.addRoute("GET", "/count", [&request_count](const HttpRequest& req, HttpResponse& res) {
@@ -221,7 +217,7 @@ TEST_F(SecurityRegressionTest, ServerShutdownWithWorkerPool) {
         res.body = std::to_string(request_count);
     });
     
-    bool listening = http_server.listen(50010);
+    bool listening = http_server.listen(50110);
     EXPECT_TRUE(listening) << "Server should be able to listen";
     
     if (listening) {
@@ -243,7 +239,7 @@ TEST_F(SecurityRegressionTest, ServerShutdownWithWorkerPool) {
         }
     }
     
-    SUCCEED() << "Server with worker pool shut down cleanly";
+    SUCCEED() << "Server shut down cleanly";
 }
 
 // ============================================================================

@@ -10,7 +10,6 @@
 #include "caduvelox/http/HttpTypes.hpp"
 #include "caduvelox/http/HttpParser.hpp"
 #include "caduvelox/logger/Logger.hpp"
-#include "caduvelox/threading/AffinityWorkerPool.hpp"
 #include "LockFreeMemoryPool.h"
 #include <openssl/ssl.h>
 #include <memory>
@@ -37,7 +36,11 @@ namespace caduvelox {
  */
 class SingleRingHttpServer {
 public:
-    explicit SingleRingHttpServer(Server& job_server, std::shared_ptr<AffinityWorkerPool> worker_pool = nullptr);
+    /**
+     * Create HTTP server on a specific Server instance
+     * @param job_server The io_uring server to use
+     */
+    explicit SingleRingHttpServer(Server& job_server);
     ~SingleRingHttpServer();
 
     /**
@@ -71,11 +74,6 @@ public:
     void stop();
 
     /**
-     * Set affinity worker pool for multi-threaded HTTP processing
-     */
-    void setAffinityWorkerPool(std::shared_ptr<AffinityWorkerPool> pool);
-    
-    /**
      * Set the router (for multi-ring server where router is shared)
      */
     void setRouter(const HttpRouter& router);
@@ -99,9 +97,6 @@ private:
     bool running_;
     bool ktls_enabled_;
     SSL_CTX* ssl_ctx_;  // For KTLS support
-    
-    // Worker thread support
-    std::shared_ptr<AffinityWorkerPool> worker_pool_;
 
     /**
      * Start accepting connections

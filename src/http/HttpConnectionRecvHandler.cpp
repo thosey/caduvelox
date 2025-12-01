@@ -1,6 +1,5 @@
 #include "caduvelox/http/HttpConnectionRecvHandler.hpp"
 #include "caduvelox/http/SingleRingHttpServer.hpp"
-#include "caduvelox/threading/AffinityWorkerPool.hpp"
 
 namespace caduvelox {
 
@@ -14,8 +13,7 @@ void HttpConnectionRecvHandler::onError(int error) {
 }
 
 // Zero-copy token processing (inline on io_uring thread)
-void HttpConnectionRecvHandler::onDataToken(std::shared_ptr<ProvidedBufferToken> token, 
-                                           void* worker_pool_ptr) {
+void HttpConnectionRecvHandler::onDataToken(std::shared_ptr<ProvidedBufferToken> token) {
     // Check if connection is still valid
     if (!connection) {
         return;

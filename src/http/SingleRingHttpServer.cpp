@@ -27,21 +27,15 @@ namespace {
 
 namespace caduvelox {
 
-SingleRingHttpServer::SingleRingHttpServer(Server& job_server, std::shared_ptr<AffinityWorkerPool> worker_pool)
+SingleRingHttpServer::SingleRingHttpServer(Server& job_server)
     : job_server_(job_server)
     , router_()
     , server_fd_(-1)
     , running_(false)
     , ktls_enabled_(false)
     , ssl_ctx_(nullptr)
-    , worker_pool_(std::move(worker_pool))
 {
-    // Worker pool is now optional - if not provided, HTTP processing happens inline on io_uring thread
-    // This is the recommended mode for high performance (no thread ping-pong)
-    if (worker_pool_) {
-        // Register worker pool with Server for MultishotRecvJob access
-        job_server_.setAffinityWorkerPool(worker_pool_);
-    }
+    // HTTP processing happens inline on io_uring thread (no thread ping-pong)
 }
 
 SingleRingHttpServer::~SingleRingHttpServer() {
@@ -411,8 +405,7 @@ void HttpConnectionJob::startReading() {
     // Template policy pattern - type-safe, fully inlineable callbacks
     auto* read_job = MultishotRecvJob<HttpConnectionRecvHandler>::createFromPool(
         client_fd_,
-        handler,              // Handler instance (no void* casting!)
-        nullptr               // worker_pool_ptr not needed for inline processing
+        handler               // Handler instance (no void* casting!)
     );
     
     if (!read_job) {
@@ -689,11 +682,6 @@ bool SingleRingHttpServer::listenOnFd(int server_fd) {
     startAccepting();
     
     return true;
-}
-
-void SingleRingHttpServer::setAffinityWorkerPool(std::shared_ptr<AffinityWorkerPool> pool) {
-    worker_pool_ = std::move(pool);
-    job_server_.setAffinityWorkerPool(worker_pool_);
 }
 
 } // namespace caduvelox

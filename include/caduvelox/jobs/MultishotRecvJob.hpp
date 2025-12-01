@@ -15,40 +15,39 @@ namespace caduvelox {
  * Concept: ResponseHandler for MultishotRecvJob
  * 
  * A valid handler must provide:
- * - onDataToken(std::shared_ptr<ProvidedBufferToken> token, void* worker_pool_ptr) for zero-copy processing
+ * - onDataToken(std::shared_ptr<ProvidedBufferToken> token) for zero-copy processing
  * - onError(int error) for error handling
  */
 template<typename H>
 concept ResponseHandler = requires(H handler, 
                                    std::shared_ptr<ProvidedBufferToken> token,
-                                   void* worker_pool_ptr,
                                    int error) {
     // Required: zero-copy token processing
-    { handler.onDataToken(token, worker_pool_ptr) } -> std::same_as<void>;
+    { handler.onDataToken(token) } -> std::same_as<void>;
     
     // Required: error handling
     { handler.onError(error) } -> std::same_as<void>;
 };
 
 /**
- * MultishotRecvJob - Zero-cost abstraction for persistent multishot socket reads with affinity workers
+ * MultishotRecvJob - Zero-cost abstraction for persistent multishot socket reads with inline processing
  * 
  * Template-based policy design for optimal performance:
  * - Handler encapsulates context + callbacks (no void* casting)
  * - Direct member calls inline perfectly (no function pointer overhead)
  * - Fully type-safe (compiler checks all types)
  * - Zero heap allocation
- * - Zero-copy buffer token passing to affinity workers
+ * - Zero-copy buffer token passing for inline processing
  * 
  * Handler Requirements:
- * - void onDataToken(std::shared_ptr<ProvidedBufferToken> token, void* worker_pool_ptr)
+ * - void onDataToken(std::shared_ptr<ProvidedBufferToken> token)
  * - void onError(int error)
  * 
  * Example Handler:
  * struct HttpConnectionHandler {
  *     HttpConnectionJob* connection;
- *     void onDataToken(std::shared_ptr<ProvidedBufferToken> token, void* worker_pool_ptr) {
- *         connection->handleDataReceivedToken(token, worker_pool_ptr);
+ *     void onDataToken(std::shared_ptr<ProvidedBufferToken> token) {
+ *         connection->handleDataReceivedToken(token);
  *     }
  *     void onError(int error) {
  *         connection->handleReadError(error);
@@ -57,7 +56,7 @@ concept ResponseHandler = requires(H handler,
  * 
  * Usage:
  *   HttpConnectionHandler handler{this};
- *   auto* job = MultishotRecvJob<HttpConnectionHandler>::createFromPool(fd, handler, worker_pool.get());
+ *   auto* job = MultishotRecvJob<HttpConnectionHandler>::createFromPool(fd, handler);
  * 
  * Lifecycle:
  * - Created once per connection (pool-allocated per handler type)
@@ -71,16 +70,13 @@ public:
 
     /**
      * Create pool-allocated MultishotRecvJob with zero-copy token callback
-     * Buffer lifetime extends until token is destroyed (for worker threads).
+     * Buffer lifetime extends until token is destroyed.
      * 
      * @param fd File descriptor to read from
      * @param handler Handler instance (contains context + callbacks)
-     * @param worker_pool_ptr Pointer to worker pool (required for zero-copy dispatch)
      * @return Pool-allocated job or nullptr if pool exhausted
      */
-    static MultishotRecvJob* createFromPool(int fd, 
-                                           Handler handler,
-                                           void* worker_pool_ptr);
+    static MultishotRecvJob* createFromPool(int fd, Handler handler);
 
     /**
      * Free pool-allocated job (for error cleanup before registration)
@@ -92,12 +88,11 @@ public:
     std::optional<CleanupCallback> handleCompletion(Server& server, struct io_uring_cqe* cqe) override;
 
     // Constructor must be public for pool allocation
-    MultishotRecvJob(int fd, Handler handler, void* worker_pool_ptr);
+    MultishotRecvJob(int fd, Handler handler);
 
 private:
     int fd_;
     Handler handler_;              // Handler encapsulates context + callbacks
-    void* worker_pool_ptr_;        // For zero-copy worker dispatch
 
     static void cleanupMultishotRecvJob(IoJob* job);
 };
@@ -107,18 +102,17 @@ private:
 // ============================================================================
 
 template<ResponseHandler Handler>
-MultishotRecvJob<Handler>::MultishotRecvJob(int fd, Handler handler, void* worker_pool_ptr)
+MultishotRecvJob<Handler>::MultishotRecvJob(int fd, Handler handler)
     : fd_(fd)
     , handler_(std::move(handler))
-    , worker_pool_ptr_(worker_pool_ptr)
 {
 }
 
 template<ResponseHandler Handler>
 MultishotRecvJob<Handler>* MultishotRecvJob<Handler>::createFromPool(
-    int fd, Handler handler, void* worker_pool_ptr) {
+    int fd, Handler handler) {
     auto* job = lfmemorypool::lockfree_pool_alloc_fast<MultishotRecvJob<Handler>>(
-        fd, std::move(handler), worker_pool_ptr);
+        fd, std::move(handler));
     if (!job) {
         return nullptr;
     }
@@ -166,7 +160,7 @@ std::optional<IoJob::CleanupCallback> MultishotRecvJob<Handler>::handleCompletio
         return cleanupMultishotRecvJob;
     }
     
-    // Zero-copy path: create token for worker thread processing
+    // Zero-copy path: create token for inline processing
     auto token = std::make_shared<ProvidedBufferToken>(
         [buffer_coordinator](unsigned buf_id) {
             buffer_coordinator->recycleBuffer(buf_id);
@@ -177,7 +171,7 @@ std::optional<IoJob::CleanupCallback> MultishotRecvJob<Handler>::handleCompletio
     );
     
     // Call token handler (direct call, fully inlineable!)
-    handler_.onDataToken(std::move(token), worker_pool_ptr_);
+    handler_.onDataToken(std::move(token));
     
     // Multishot continues automatically (no cleanup callback)
     return std::nullopt;

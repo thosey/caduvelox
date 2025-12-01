@@ -72,9 +72,9 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
             return false;
         }
         
-        // Create internal SingleRingHttpServer for this ring WITHOUT worker pool
+        // Create internal SingleRingHttpServer for this ring
         // HTTP processing happens inline on io_uring thread for maximum performance
-        auto http_server = std::make_unique<SingleRingHttpServer>(ring->getServer(), nullptr);
+        auto http_server = std::make_unique<SingleRingHttpServer>(ring->getServer());
         
         // Share the router (read-only after setup)
         http_server->setRouter(router_);
