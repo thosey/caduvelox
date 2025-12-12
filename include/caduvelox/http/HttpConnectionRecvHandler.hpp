@@ -19,7 +19,8 @@ struct HttpConnectionRecvHandler {
     void onError(int error);
     
     // Zero-copy token processing (inline on io_uring thread)
-    void onDataToken(ProvidedBufferToken token);
+    // Token passed by reference - lifecycle managed by caller's scope
+    void onDataToken(ProvidedBufferToken& token);
 };
 
 } // namespace caduvelox

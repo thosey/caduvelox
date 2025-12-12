@@ -55,6 +55,9 @@ protected:
         if (event_loop_thread_.joinable()) {
             event_loop_thread_.join();
         }
+        
+        // Give socket time to fully close and exit TIME_WAIT
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     
     int connectToServer() {
@@ -353,6 +356,9 @@ protected:
         if (event_loop_thread_.joinable()) {
             event_loop_thread_.join();
         }
+        
+        // Give OS time to fully release the socket (avoid "Address already in use")
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     
     int connectToServer() {

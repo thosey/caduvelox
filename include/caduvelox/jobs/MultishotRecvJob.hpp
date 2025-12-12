@@ -15,13 +15,13 @@ namespace caduvelox {
  * Concept: ResponseHandler for MultishotRecvJob
  * 
  * A valid handler must provide:
- * - onDataToken(ProvidedBufferToken token) for zero-copy processing
+ * - onDataToken(ProvidedBufferToken& token) for zero-copy processing
  * - onError(int error) for error handling
  */
 template<typename H>
-concept ResponseHandler = requires(H handler, int error) {
-    // Required: zero-copy token processing (move-only type, passed by value)
-    { handler.onDataToken(std::declval<ProvidedBufferToken&&>()) } -> std::same_as<void>;
+concept ResponseHandler = requires(H handler, int error, ProvidedBufferToken& token) {
+    // Required: zero-copy token processing (passed by reference, lifetime managed by caller)
+    { handler.onDataToken(token) } -> std::same_as<void>;
     
     // Required: error handling
     { handler.onError(error) } -> std::same_as<void>;
@@ -159,7 +159,7 @@ std::optional<IoJob::CleanupCallback> MultishotRecvJob<Handler>::handleCompletio
     }
     
     // Zero-copy path: create token for inline processing
-    // Token is moved to handler, ensuring RAII cleanup even on exceptions
+    // Token lifecycle managed by scope - RAII cleanup when function returns
     ProvidedBufferToken token(
         [buffer_coordinator](unsigned buf_id) {
             buffer_coordinator->recycleBuffer(buf_id);
@@ -170,7 +170,7 @@ std::optional<IoJob::CleanupCallback> MultishotRecvJob<Handler>::handleCompletio
     );
     
     // Call token handler (direct call, fully inlineable!)
-    handler_.onDataToken(std::move(token));
+    handler_.onDataToken(token);
     
     // Multishot continues automatically (no cleanup callback)
     return std::nullopt;
