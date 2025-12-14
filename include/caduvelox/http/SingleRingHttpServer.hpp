@@ -204,6 +204,8 @@ private:
     size_t max_request_size_;
     bool reading_active_;
     bool keep_alive_;  // Track if connection should remain open
+    int pending_writes_;  // Track pending write operations to prevent use-after-free
+    bool close_pending_;  // Track if close was requested while writes were pending
 };
 
 } // namespace caduvelox

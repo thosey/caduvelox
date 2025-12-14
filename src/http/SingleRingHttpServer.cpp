@@ -366,6 +366,8 @@ HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const Ht
     , max_request_size_(max_request_size)
     , reading_active_(false)
     , keep_alive_(true)  // Default to keep-alive for HTTP/1.1
+    , pending_writes_(0)
+    , close_pending_(false)
 {
     
     request_buffer_.reserve(8192);
@@ -529,6 +531,9 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
 
         std::string file_path = response.file_path;
 
+        // Increment pending writes for the file transfer
+        pending_writes_++;
+
         auto http_file_job = HTTPFileJob::createFromPool(
             client_fd_,
             file_path,
@@ -536,6 +541,16 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             [this, keep_alive = keep_alive_](int fd, size_t bytes_sent) {
                 Logger::getInstance().logMessage("HttpConnectionJob: File transfer complete fd=" + 
                                                std::to_string(fd) + ", bytes=" + std::to_string(bytes_sent));
+                
+                // Decrement pending writes
+                pending_writes_--;
+                
+                // If close was pending, execute it now
+                if (close_pending_ && pending_writes_ == 0) {
+                    closeConnection();
+                    return;
+                }
+                
                 if (keep_alive) {
                     startReading();
                 } else {
@@ -545,6 +560,10 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             [this](int fd, int error) {
                 Logger::getInstance().logError("HttpConnectionJob: File transfer error fd=" + 
                                              std::to_string(fd) + ", error=" + std::to_string(error));
+                
+                // Decrement pending writes
+                pending_writes_--;
+                
                 closeConnection();
             }
         );
@@ -556,6 +575,7 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             Logger::getInstance().logMessage("HttpConnectionJob: HTTPFileJob started");
         } else {
             Logger::getInstance().logError("HttpConnectionJob: Failed to allocate HTTPFileJob from pool");
+            pending_writes_--;  // Decrement since allocation failed
             closeConnection();
         }
         return;
@@ -581,6 +601,9 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
     auto response_data = std::make_unique<char[]>(response_str.size());
     std::memcpy(response_data.get(), response_str.data(), response_str.size());
 
+    // Increment pending writes BEFORE creating the WriteJob
+    pending_writes_++;
+    
     auto write_job = WriteJob::createFromPoolWithOwnedData(
         client_fd_,
         std::move(response_data),
@@ -588,6 +611,16 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         [this](int fd, size_t bytes_written) {
             Logger::getInstance().logMessage("HttpConnectionJob: Response sent fd=" + std::to_string(fd) + 
                                            ", bytes=" + std::to_string(bytes_written));
+            
+            // Decrement pending writes
+            pending_writes_--;
+            
+            // If close was pending, execute it now
+            if (close_pending_ && pending_writes_ == 0) {
+                closeConnection();
+                return;
+            }
+            
             // Check if we should keep the connection alive for more requests
             if (keep_alive_) {
                 continueReading();
@@ -598,6 +631,10 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         [this](int fd, int error) {
             Logger::getInstance().logError("HttpConnectionJob: Write error fd=" + std::to_string(fd) + 
                                          ", error=" + std::to_string(error));
+            
+            // Decrement pending writes
+            pending_writes_--;
+            
             closeConnection();
         }
     );
@@ -613,21 +650,32 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         } else {
             Logger::getInstance().logError("HttpConnectionJob: Failed to get SQE for WriteJob");
             WriteJob::freePoolAllocated(write_job);
+            pending_writes_--;  // Decrement since job failed to submit
             closeConnection();
         }
     } else {
         Logger::getInstance().logError("HttpConnectionJob: Failed to allocate WriteJob from pool");
+        pending_writes_--;  // Decrement since allocation failed
         closeConnection();
     }
 }
 
 void HttpConnectionJob::closeConnection() {
+    // If there are pending writes, defer the close
+    if (pending_writes_ > 0) {
+        close_pending_ = true;
+        Logger::getInstance().logMessage("HttpConnectionJob: Close deferred, pending writes=" + 
+                                       std::to_string(pending_writes_) + " fd=" + std::to_string(client_fd_));
+        return;
+    }
+    
     if (client_fd_ >= 0) {
         Logger::getInstance().logMessage("[ACCESS] DISCONNECT fd=" + std::to_string(client_fd_));
         close(client_fd_);
         client_fd_ = -1;
     }
     reading_active_ = false;
+    close_pending_ = false;
     
     // Job will be returned to pool via cleanup callback
 }
