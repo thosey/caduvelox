@@ -1,16 +1,18 @@
 #include "caduvelox/jobs/AcceptJob.hpp"
 #include "caduvelox/Server.hpp"
 #include "caduvelox/logger/Logger.hpp"
-#include "LockFreeMemoryPool.h"
+#include "caduvelox/util/PoolManager.hpp"
 #include <liburing.h>
 #include <sys/socket.h>
 
-// Define lock-free pool for AcceptJob at global scope (overridable size)
-// Small default since usually only 1-2 active accept jobs per listening socket
+// Pool capacity specialization for AcceptJob
 #ifndef CDV_ACCEPT_POOL_SIZE
 #define CDV_ACCEPT_POOL_SIZE 1000
 #endif
-DEFINE_LOCKFREE_POOL(caduvelox::AcceptJob, CDV_ACCEPT_POOL_SIZE);
+template<>
+constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::AcceptJob>() {
+    return CDV_ACCEPT_POOL_SIZE; // Accept operations (1-2 per socket)
+}
 
 namespace caduvelox {
 
@@ -23,7 +25,7 @@ AcceptJob::AcceptJob(int server_fd)
 AcceptJob* AcceptJob::create(int server_fd,
                             ConnectionCallback on_connection,
                             ErrorCallback on_error) {
-    AcceptJob* job = lfmemorypool::lockfree_pool_alloc_fast<AcceptJob>(server_fd);
+    AcceptJob* job = PoolManager::allocate<AcceptJob>(server_fd);
     if (job) {
         job->on_connection_ = std::move(on_connection);
         job->on_error_ = std::move(on_error);
@@ -34,7 +36,7 @@ AcceptJob* AcceptJob::create(int server_fd,
 // Free pool-allocated job (for error cleanup)
 void AcceptJob::freePoolAllocated(AcceptJob* job) {
     if (job) {
-        lfmemorypool::lockfree_pool_free_fast<AcceptJob>(job);
+        PoolManager::deallocate<AcceptJob>(job);
     }
 }
 

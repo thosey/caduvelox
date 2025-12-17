@@ -6,8 +6,8 @@
 #include "caduvelox/http/HttpConnectionRecvHandler.hpp"
 #include "caduvelox/ring_buffer/BufferRingCoordinator.hpp"
 #include "caduvelox/util/ProvidedBufferToken.hpp"
+#include "caduvelox/util/PoolManager.hpp"
 #include "caduvelox/Config.hpp"
-#include "LockFreeMemoryPool.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -19,7 +19,7 @@
 
 namespace {
     void cleanupHttpConnectionJob(caduvelox::IoJob* job) {
-        lfmemorypool::lockfree_pool_free_fast<caduvelox::HttpConnectionJob>(
+        caduvelox::PoolManager::deallocate(
             static_cast<caduvelox::HttpConnectionJob*>(job)
         );
     }
@@ -347,13 +347,8 @@ HttpConnectionJob* HttpConnectionJob::createFromPool(
     SingleRingHttpServer* http_server,
     size_t max_request_size) {
     
-    HttpConnectionJob* job = lfmemorypool::lockfree_pool_alloc_fast<HttpConnectionJob>(
+    return PoolManager::allocate<HttpConnectionJob>(
         client_fd, job_server, router, http_server, max_request_size);
-    if (!job) {
-        return nullptr; // Pool exhausted
-    }
-    
-    return job;
 }
 
 HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router, 
@@ -405,7 +400,7 @@ void HttpConnectionJob::startReading() {
     
     // Zero-copy path: use token-based MultishotRecvJob for inline processing on io_uring thread
     // Template policy pattern - type-safe, fully inlineable callbacks
-    auto* read_job = MultishotRecvJob<HttpConnectionRecvHandler>::createFromPool(
+    auto* read_job = PoolManager::allocate<MultishotRecvJob<HttpConnectionRecvHandler>>(
         client_fd_,
         handler               // Handler instance (no void* casting!)
     );
@@ -431,7 +426,7 @@ void HttpConnectionJob::startReading() {
     } else {
         Logger::getInstance().logError("HttpConnectionJob: Failed to register ReadJob");
         // CRITICAL: Free the pool-allocated job to prevent leak
-        MultishotRecvJob<HttpConnectionRecvHandler>::freePoolAllocated(read_job);
+        PoolManager::deallocate(read_job);
         reading_active_ = false;
     }
 }

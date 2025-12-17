@@ -3,16 +3,18 @@
 #include "caduvelox/jobs/WriteJob.hpp"
 #include "caduvelox/jobs/SpliceFileJob.hpp"
 #include "caduvelox/logger/Logger.hpp"
-#include "LockFreeMemoryPool.h"
+#include "caduvelox/util/PoolManager.hpp"
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sstream>
 #include <cstring>
 
-// Define lock-free pool for HTTPFileJob at global scope  
-// Medium pool since HTTP file serving is common but not as frequent as basic I/O
-DEFINE_LOCKFREE_POOL(caduvelox::HTTPFileJob, 1000);
+// Pool capacity specialization for HTTPFileJob
+template<>
+constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::HTTPFileJob>() {
+    return 1000; // File serving operations
+}
 
 namespace caduvelox {
 
@@ -47,7 +49,7 @@ HTTPFileJob* HTTPFileJob::createFromPool(
     CompletionCallback on_complete,
     ErrorCallback on_error) {
     
-    HTTPFileJob* job = lfmemorypool::lockfree_pool_alloc_fast<HTTPFileJob>(client_fd, file_path, offset, length, std::move(response));
+    HTTPFileJob* job = PoolManager::allocate<HTTPFileJob>(client_fd, file_path, offset, length, std::move(response));
     if (job) {
         job->on_complete_ = std::move(on_complete);
         job->on_error_ = std::move(on_error);
@@ -187,7 +189,7 @@ void HTTPFileJob::startSendingHeaders(Server& server) {
             if (on_error_) {
                 on_error_(client_fd_, error);
             }
-            lfmemorypool::lockfree_pool_free_fast<HTTPFileJob>(this); // Pool cleanup
+            PoolManager::deallocate<HTTPFileJob>(this); // Pool cleanup
         }
     );
     
@@ -227,7 +229,7 @@ void HTTPFileJob::startSendingFile(Server& server) {
             if (on_complete_) {
                 on_complete_(client_fd_, header_size_ + bytes_transferred);
             }
-            lfmemorypool::lockfree_pool_free_fast<HTTPFileJob>(this); // Pool cleanup
+            PoolManager::deallocate<HTTPFileJob>(this); // Pool cleanup
         },
         [this](int fd, int error) {
             Logger::getInstance().logError("HTTPFileJob: Splice error fd=" + std::to_string(fd) + 
@@ -239,7 +241,7 @@ void HTTPFileJob::startSendingFile(Server& server) {
             if (on_error_) {
                 on_error_(client_fd_, error);
             }
-            lfmemorypool::lockfree_pool_free_fast<HTTPFileJob>(this); // Pool cleanup
+            PoolManager::deallocate<HTTPFileJob>(this); // Pool cleanup
         }
     );
     
@@ -257,7 +259,7 @@ void HTTPFileJob::startSendingFile(Server& server) {
         if (on_error_) {
             on_error_(client_fd_, ENOMEM);
         }
-        lfmemorypool::lockfree_pool_free_fast<HTTPFileJob>(this);
+        PoolManager::deallocate<HTTPFileJob>(this);
     }
 }
 
@@ -292,13 +294,13 @@ void HTTPFileJob::sendError(Server& server, int status_code, const std::string& 
             if (on_error_) {
                 on_error_(client_fd_, 0); // Indicate error was handled
             }
-            lfmemorypool::lockfree_pool_free_fast<HTTPFileJob>(this);
+            PoolManager::deallocate<HTTPFileJob>(this);
         },
         [this](int fd, int error) {
             if (on_error_) {
                 on_error_(client_fd_, error);
             }
-            lfmemorypool::lockfree_pool_free_fast<HTTPFileJob>(this);
+            PoolManager::deallocate<HTTPFileJob>(this);
         }
     );
     
@@ -315,14 +317,14 @@ void HTTPFileJob::sendError(Server& server, int status_code, const std::string& 
             if (on_error_) {
                 on_error_(client_fd_, ENOMEM);
             }
-            lfmemorypool::lockfree_pool_free_fast<HTTPFileJob>(this);
+            PoolManager::deallocate<HTTPFileJob>(this);
         }
     } else {
         Logger::getInstance().logError("HTTPFileJob: Failed to allocate error WriteJob from pool");
         if (on_error_) {
             on_error_(client_fd_, ENOMEM);
         }
-        lfmemorypool::lockfree_pool_free_fast<HTTPFileJob>(this);
+        PoolManager::deallocate<HTTPFileJob>(this);
     }
 }
 

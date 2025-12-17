@@ -37,7 +37,6 @@ sudo dnf install -y gcc-c++ cmake pkg-config \
 ```bash
 git clone https://github.com/thosey/caduvelox.git
 cd caduvelox
-git submodule update --init --recursive
 
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
@@ -166,7 +165,3 @@ Issues and pull requests welcome! Please ensure tests pass before submitting PRs
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-Uses [lock-free-memory-pool](https://github.com/thosey/lock-free-memory-pool) (MIT License).

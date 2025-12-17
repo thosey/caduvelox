@@ -1,22 +1,22 @@
 #include "caduvelox/jobs/SpliceFileJob.hpp"
 #include "caduvelox/Server.hpp"
 #include "caduvelox/logger/Logger.hpp"
-#include "LockFreeMemoryPool.h"
+#include "caduvelox/util/PoolManager.hpp"
 #include <liburing.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <algorithm>
 #include <errno.h>
 
-// Define lock-free pool for SpliceFileJob
-// Medium pool since splice operations are used for zero-copy file transfers
-DEFINE_LOCKFREE_POOL(caduvelox::SpliceFileJob, 1000);
+// Pool capacity specialization for SpliceFileJob
+template<>
+constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::SpliceFileJob>() {
+    return 1000; // Zero-copy file transfer operations
+}
 
 namespace {
     void cleanupSpliceFileJob(caduvelox::IoJob* job) {
-        lfmemorypool::lockfree_pool_free_fast<caduvelox::SpliceFileJob>(
-            static_cast<caduvelox::SpliceFileJob*>(job)
-        );
+        caduvelox::PoolManager::deallocate(static_cast<caduvelox::SpliceFileJob*>(job));
     }
 }
 
@@ -49,7 +49,7 @@ SpliceFileJob* SpliceFileJob::createFromPool(
     CompletionCallback on_complete,
     ErrorCallback on_error) {
     
-    SpliceFileJob* job = lfmemorypool::lockfree_pool_alloc_fast<SpliceFileJob>(client_fd, file_fd, offset, length);
+    SpliceFileJob* job = PoolManager::allocate<SpliceFileJob>(client_fd, file_fd, offset, length);
     if (job) {
         job->is_pool_allocated_ = true;
         job->on_complete_ = std::move(on_complete);

@@ -1,22 +1,21 @@
 #include "caduvelox/jobs/WriteJob.hpp"
 #include "caduvelox/Server.hpp"
 #include "caduvelox/logger/Logger.hpp"
-#include "LockFreeMemoryPool.h"
+#include "caduvelox/util/PoolManager.hpp"
 #include <liburing.h>
 #include <cstring>
 #include <cerrno>
 #include <string>
 
-// Define cache-aligned lock-free pool for WriteJob (extremely hot path)
-// Large pool since we can have many concurrent write operations
-// Cache alignment prevents false sharing between worker threads
-DEFINE_LOCKFREE_POOL_CACHE_ALIGNED(caduvelox::WriteJob, 10000);
+// Pool capacity specialization for WriteJob (extremely hot path)
+template<>
+constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::WriteJob>() {
+    return 10000; // Large pool - many concurrent write operations
+}
 
 namespace {
     void cleanupWriteJob(caduvelox::IoJob* job) {
-        lfmemorypool::lockfree_pool_free_fast<caduvelox::WriteJob>(
-            static_cast<caduvelox::WriteJob*>(job)
-        );
+        caduvelox::PoolManager::deallocate(static_cast<caduvelox::WriteJob*>(job));
     }
 }
 
@@ -30,7 +29,7 @@ WriteJob::WriteJob(int fd, bool owns_data)
 WriteJob* WriteJob::createFromPoolWithOwnedData(int fd, std::unique_ptr<char[]> data, size_t length,
                                                CompletionCallback on_complete,
                                                ErrorCallback on_error) {
-    WriteJob* job = lfmemorypool::lockfree_pool_alloc_fast<WriteJob>(fd, true);
+    WriteJob* job = PoolManager::allocate<WriteJob>(fd, true);
     if (!job) {
         return nullptr; // Pool exhausted
     }
@@ -48,7 +47,7 @@ WriteJob* WriteJob::createFromPoolWithOwnedData(int fd, std::unique_ptr<char[]> 
 WriteJob* WriteJob::createFromPoolWithBorrowedData(int fd, const char* data, size_t length,
                                                   CompletionCallback on_complete,
                                                   ErrorCallback on_error) {
-    WriteJob* job = lfmemorypool::lockfree_pool_alloc_fast<WriteJob>(fd, false);
+    WriteJob* job = PoolManager::allocate<WriteJob>(fd, false);
     if (!job) {
         return nullptr; // Pool exhausted
     }
@@ -74,7 +73,7 @@ WriteJob* WriteJob::createFromPoolFromString(int fd, const std::string& data,
 
 void WriteJob::freePoolAllocated(WriteJob* job) {
     if (job && job->is_pool_allocated_) {
-        lfmemorypool::lockfree_pool_free_fast<WriteJob>(job);
+        PoolManager::deallocate<WriteJob>(job);
     }
 }
 

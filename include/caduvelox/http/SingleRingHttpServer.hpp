@@ -10,7 +10,7 @@
 #include "caduvelox/http/HttpTypes.hpp"
 #include "caduvelox/http/HttpParser.hpp"
 #include "caduvelox/logger/Logger.hpp"
-#include "LockFreeMemoryPool.h"
+#include "caduvelox/util/PoolManager.hpp"
 #include <openssl/ssl.h>
 #include <memory>
 #include <unordered_map>
@@ -210,13 +210,20 @@ private:
 
 } // namespace caduvelox
 
+// Pool capacity specializations for HTTP jobs
+template<>
+constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::HttpConnectionJob>() {
+    return 10000; // High concurrency - many simultaneous connections
+}
+
 // Type alias for templated MultishotRecvJob (avoids comma issues in macro)
 using HttpMultishotRecvJob = caduvelox::MultishotRecvJob<caduvelox::HttpConnectionRecvHandler>;
 
-// Define cache-aligned lock-free pools for HTTP server jobs (hot paths)
-// Large pool for HTTP connection jobs since we can have many concurrent connections
-// Cache alignment prevents false sharing between worker threads
-DEFINE_LOCKFREE_POOL_CACHE_ALIGNED(caduvelox::HttpConnectionJob, 10000);
+// Template specialization for MultishotRecvJob with HttpConnectionRecvHandler
+template<>
+constexpr size_t caduvelox::PoolManager::getPoolCapacity<HttpMultishotRecvJob>() {
+    return 10000; // One per active HTTP connection
+}
 
-// Pool for templated MultishotRecvJob with HttpConnectionRecvHandler (also hot)
-DEFINE_LOCKFREE_POOL_CACHE_ALIGNED(HttpMultishotRecvJob, 10000);
+// Thread-local pools are managed by PoolManager
+// Each ring thread gets its own independent pools with zero synchronization

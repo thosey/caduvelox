@@ -3,7 +3,7 @@
 #include "caduvelox/jobs/IoJob.hpp"
 #include "caduvelox/Server.hpp"
 #include "caduvelox/util/ProvidedBufferToken.hpp"
-#include "LockFreeMemoryPool.h"
+#include "caduvelox/util/PoolManager.hpp"
 #include <liburing.h>
 #include <memory>
 #include <errno.h>
@@ -54,7 +54,7 @@ concept ResponseHandler = requires(H handler, int error, ProvidedBufferToken& to
  * 
  * Usage:
  *   HttpConnectionHandler handler{this};
- *   auto* job = MultishotRecvJob<HttpConnectionHandler>::createFromPool(fd, handler);
+ *   auto* job = PoolManager::allocate<MultishotRecvJob<HttpConnectionHandler>>(fd, handler);
  * 
  * Lifecycle:
  * - Created once per connection (pool-allocated per handler type)
@@ -66,21 +66,6 @@ class MultishotRecvJob : public IoJob {
 public:
     ~MultishotRecvJob() = default;
 
-    /**
-     * Create pool-allocated MultishotRecvJob with zero-copy token callback
-     * Buffer lifetime extends until token is destroyed.
-     * 
-     * @param fd File descriptor to read from
-     * @param handler Handler instance (contains context + callbacks)
-     * @return Pool-allocated job or nullptr if pool exhausted
-     */
-    static MultishotRecvJob* createFromPool(int fd, Handler handler);
-
-    /**
-     * Free pool-allocated job (for error cleanup before registration)
-     */
-    static void freePoolAllocated(MultishotRecvJob* job);
-
     // IoJob interface
     void prepareSqe(struct io_uring_sqe* sqe) override;
     std::optional<CleanupCallback> handleCompletion(Server& server, struct io_uring_cqe* cqe) override;
@@ -91,8 +76,6 @@ public:
 private:
     int fd_;
     Handler handler_;              // Handler encapsulates context + callbacks
-
-    static void cleanupMultishotRecvJob(IoJob* job);
 };
 
 // ============================================================================
@@ -104,22 +87,6 @@ MultishotRecvJob<Handler>::MultishotRecvJob(int fd, Handler handler)
     : fd_(fd)
     , handler_(std::move(handler))
 {
-}
-
-template<ResponseHandler Handler>
-MultishotRecvJob<Handler>* MultishotRecvJob<Handler>::createFromPool(
-    int fd, Handler handler) {
-    auto* job = lfmemorypool::lockfree_pool_alloc_fast<MultishotRecvJob<Handler>>(
-        fd, std::move(handler));
-    if (!job) {
-        return nullptr;
-    }
-    return job;
-}
-
-template<ResponseHandler Handler>
-void MultishotRecvJob<Handler>::freePoolAllocated(MultishotRecvJob* job) {
-    lfmemorypool::lockfree_pool_free_fast<MultishotRecvJob<Handler>>(job);
 }
 
 template<ResponseHandler Handler>
@@ -139,7 +106,10 @@ std::optional<IoJob::CleanupCallback> MultishotRecvJob<Handler>::handleCompletio
     if (result <= 0) {
         // Error or EOF - call error handler (direct call, fully inlineable!)
         handler_.onError(result);
-        return cleanupMultishotRecvJob;
+        // Return lambda that deallocates to thread-local pool
+        return [](IoJob* job) {
+            PoolManager::deallocate(static_cast<MultishotRecvJob<Handler>*>(job));
+        };
     }
     
     // Successful read
@@ -149,13 +119,17 @@ std::optional<IoJob::CleanupCallback> MultishotRecvJob<Handler>::handleCompletio
     auto buffer_coordinator = server.getBufferRingCoordinator();
     if (!buffer_coordinator) {
         handler_.onError(-EINVAL);
-        return cleanupMultishotRecvJob;
+        return [](IoJob* job) {
+            PoolManager::deallocate(static_cast<MultishotRecvJob<Handler>*>(job));
+        };
     }
     
     void* buffer_ptr = buffer_coordinator->getBufferPtr(buffer_id);
     if (!buffer_ptr) {
         handler_.onError(-EINVAL);
-        return cleanupMultishotRecvJob;
+        return [](IoJob* job) {
+            PoolManager::deallocate(static_cast<MultishotRecvJob<Handler>*>(job));
+        };
     }
     
     // Zero-copy path: create token for inline processing
@@ -174,11 +148,6 @@ std::optional<IoJob::CleanupCallback> MultishotRecvJob<Handler>::handleCompletio
     
     // Multishot continues automatically (no cleanup callback)
     return std::nullopt;
-}
-
-template<ResponseHandler Handler>
-void MultishotRecvJob<Handler>::cleanupMultishotRecvJob(IoJob* job) {
-    freePoolAllocated(static_cast<MultishotRecvJob<Handler>*>(job));
 }
 
 } // namespace caduvelox

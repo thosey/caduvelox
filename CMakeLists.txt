@@ -7,10 +7,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Suppress the hardware_destructive_interference_size warning from lock-free memory pool
-# We don't care about ABI compatibility for this header-only library usage
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-interference-size")
-
 # Option to enable sanitizers (ASAN/UBSAN) for local/CI debugging
 option(SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 if(SANITIZERS)
@@ -27,26 +23,6 @@ find_library(URING_LIB uring REQUIRED)
 
 # Find system OpenSSL (requires kTLS support)
 find_package(OpenSSL REQUIRED)
-
-# Ensure submodules are initialized
-find_package(Git QUIET)
-if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
-    # Check if lock-free-memory-pool submodule is initialized
-    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/lock-free-memory-pool/src/LockFreeMemoryPool.h")
-        message(STATUS "Submodule external/lock-free-memory-pool not found. Initializing submodules...")
-        execute_process(COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
-                       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                       RESULT_VARIABLE GIT_SUBMOD_RESULT)
-        if(NOT GIT_SUBMOD_RESULT EQUAL "0")
-            message(FATAL_ERROR "git submodule update --init failed with ${GIT_SUBMOD_RESULT}, please checkout submodules")
-        endif()
-    endif()
-endif()
-
-# Verify that the submodule is present
-if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/lock-free-memory-pool/src/LockFreeMemoryPool.h")
-    message(FATAL_ERROR "The submodules were not downloaded! GIT_SUBMODULE was turned off or failed. Please update submodules and try again.")
-endif()
 
 # Verify OpenSSL has kTLS support
 message(STATUS "Found OpenSSL ${OPENSSL_VERSION}")
@@ -66,7 +42,6 @@ add_library(caduvelox
     # Job-based architecture (low-level io_uring jobs)
     src/jobs/WriteJob.cpp
     src/jobs/AcceptJob.cpp
-    src/jobs/EventFdMonitorJob.cpp
     src/jobs/SpliceFileJob.cpp
     src/jobs/KTLSJob.cpp
     src/jobs/KTLSContextHelper.cpp
@@ -83,7 +58,6 @@ add_library(caduvelox
 
 target_include_directories(caduvelox PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/lock-free-memory-pool/src
 )
 
 target_link_libraries(caduvelox 

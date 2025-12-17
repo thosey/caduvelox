@@ -1,25 +1,24 @@
 #include "caduvelox/jobs/KTLSJob.hpp"
 #include "caduvelox/Server.hpp"
-#include "LockFreeMemoryPool.h"
+#include "caduvelox/util/PoolManager.hpp"
 #include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
 #include <errno.h>
 #include <cstring>
 
-// Define cache-aligned lock-free pool for KTLSJob (hot path - high contention)
-// Size can be overridden at compile time via -DCDV_KTLS_POOL_SIZE=<n>
-// Cache alignment prevents false sharing between worker threads
+// Pool capacity specialization for KTLSJob
 #ifndef CDV_KTLS_POOL_SIZE
 #define CDV_KTLS_POOL_SIZE 5000
 #endif
-DEFINE_LOCKFREE_POOL_CACHE_ALIGNED(caduvelox::KTLSJob, CDV_KTLS_POOL_SIZE);
+template<>
+constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::KTLSJob>() {
+    return CDV_KTLS_POOL_SIZE; // HTTPS handshake operations
+}
 
 namespace {
     void cleanupKTLSJob(caduvelox::IoJob* job) {
-        lfmemorypool::lockfree_pool_free_fast<caduvelox::KTLSJob>(
-            static_cast<caduvelox::KTLSJob*>(job)
-        );
+        caduvelox::PoolManager::deallocate(static_cast<caduvelox::KTLSJob*>(job));
     }
 }
 
@@ -31,7 +30,7 @@ KTLSJob* KTLSJob::createFromPool(
     SuccessCallback on_success,
     ErrorCallback on_error
 ) {
-    KTLSJob* job = lfmemorypool::lockfree_pool_alloc_fast<KTLSJob>(client_fd, ssl_ctx, std::move(on_success), std::move(on_error));
+    KTLSJob* job = PoolManager::allocate<KTLSJob>(client_fd, ssl_ctx, std::move(on_success), std::move(on_error));
     if (job) {
         job->is_pool_allocated_ = true;
     }
@@ -40,7 +39,7 @@ KTLSJob* KTLSJob::createFromPool(
 
 void KTLSJob::freePoolAllocated(KTLSJob* job) {
     if (job) {
-        lfmemorypool::lockfree_pool_free_fast<KTLSJob>(job);
+        PoolManager::deallocate<KTLSJob>(job);
     }
 }
 
