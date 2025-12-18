@@ -53,7 +53,6 @@ add_library(caduvelox
     src/http/HttpConnectionRecvHandler.cpp
     src/http/HTTPFileJob.cpp
     src/threading/SimpleWorkerPool.cpp
-    src/threading/AffinityWorkerPool.cpp
 )
 
 target_include_directories(caduvelox PUBLIC

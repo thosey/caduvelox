@@ -13,7 +13,6 @@ namespace caduvelox {
 
 // Forward declarations
 class BufferRingCoordinator;
-class AffinityWorkerPool;
 class IoJob;
 
 /**
@@ -93,18 +92,6 @@ public:
      */
     struct io_uring* getRing() { return &ring_; }
 
-    /**
-     * Set the affinity worker pool for multi-threaded processing.
-     * When set, jobs can dispatch CPU-intensive work to worker threads
-     * while keeping io_uring operations on the main thread.
-     */
-    void setAffinityWorkerPool(std::shared_ptr<AffinityWorkerPool> pool);
-
-    /**
-     * Get the affinity worker pool
-     */
-    std::shared_ptr<AffinityWorkerPool> getAffinityWorkerPool() const;
-
 private:
     void processCompletions();
     void drainCompletions();
@@ -117,9 +104,6 @@ private:
     
     // Buffer ring for zero-copy operations
     std::shared_ptr<BufferRingCoordinator> buffer_ring_coordinator_;
-    
-    // Affinity worker pool for multi-threaded processing
-    std::shared_ptr<AffinityWorkerPool> affinity_worker_pool_;
 };
 
 } // namespace caduvelox

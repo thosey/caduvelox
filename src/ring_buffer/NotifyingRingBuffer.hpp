@@ -1,16 +1,16 @@
 #pragma once
 
-#include "VyukovRingBuffer.hpp"
+#include "MPMCRingBuffer.hpp"
 #include <atomic>
 
 /**
- * A decorator around VyukovRingBuffer that adds efficient blocking/notification
+ * A decorator around MPMCRingBuffer that adds efficient blocking/notification
  * for producers and consumers, eliminating busy-waiting.
  * 
  * Uses C++20 atomic wait/notify for optimal performance:
  * - Producers notify waiting consumers when data is available
  * - Consumers block efficiently instead of busy-waiting
- * - Maintains the lock-free properties of the underlying VyukovRingBuffer
+ * - Maintains the lock-free properties of the underlying MPMCRingBuffer
  * 
  * Template parameters:
  * @param T - Type of elements stored in the buffer
@@ -23,7 +23,7 @@ public:
     
     NotifyingRingBuffer() = default;
     
-    // Non-copyable, non-movable (like VyukovRingBuffer)
+    // Non-copyable, non-movable (like MPMCRingBuffer)
     NotifyingRingBuffer(const NotifyingRingBuffer&) = delete;
     NotifyingRingBuffer& operator=(const NotifyingRingBuffer&) = delete;
     NotifyingRingBuffer(NotifyingRingBuffer&&) = delete;
@@ -120,7 +120,7 @@ public:
     }
 
 private:
-    VyukovRingBuffer<T, N> ring_;
+    MPMCRingBuffer<T, N> ring_;
     std::atomic<bool> has_data_{false};
     std::atomic<bool> shutdown_{false};
 };

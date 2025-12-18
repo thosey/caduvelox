@@ -280,17 +280,17 @@ TEST_F(NotifyingRingBufferTest, AtomicOverheadBenchmark) {
               << (num_operations * 1000000.0 / duration.count()) 
               << " ops/sec)" << std::endl;
     
-    // Compare with raw VyukovRingBuffer performance (~29M ops/sec)
+    // Compare with raw MPMCRingBuffer performance (~29M ops/sec)
     // This should be much closer to the raw performance
 }
 
-// Direct comparison with raw VyukovRingBuffer
+// Direct comparison with raw MPMCRingBuffer
 TEST_F(NotifyingRingBufferTest, RawVsNotifyingComparison) {
     const int num_operations = 1000000;
     
-    // Test raw VyukovRingBuffer
+    // Test raw MPMCRingBuffer
     {
-        VyukovRingBuffer<int, 1024> raw_buffer;
+        MPMCRingBuffer<int, 1024> raw_buffer;
         
         // Pre-fill buffer (leave one slot free)
         for (int i = 0; i < 1023; ++i) {
@@ -308,7 +308,7 @@ TEST_F(NotifyingRingBufferTest, RawVsNotifyingComparison) {
         auto end = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
         
-        std::cout << "Raw VyukovRingBuffer: " << num_operations 
+        std::cout << "Raw MPMCRingBuffer: " << num_operations 
                   << " operations in " << duration.count() 
                   << " microseconds (" 
                   << (num_operations * 1000000.0 / duration.count()) 

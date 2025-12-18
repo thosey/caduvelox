@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../../../src/ring_buffer/VyukovRingBuffer.hpp"
+#include "../../../src/ring_buffer/MPMCRingBuffer.hpp"
 #include <thread>
 #include <vector>
 #include <atomic>
@@ -8,8 +8,8 @@
 #include <set>
 #include <algorithm>
 
-// Test fixture for VyukovRingBuffer tests
-class VyukovRingBufferTest : public ::testing::Test {
+// Test fixture for MPMCRingBuffer tests
+class MPMCRingBufferTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // Any setup code here
@@ -21,8 +21,8 @@ protected:
 };
 
 // Basic functionality tests
-TEST_F(VyukovRingBufferTest, BasicEnqueueDequeue) {
-    VyukovRingBuffer<int, 8> buffer;
+TEST_F(MPMCRingBufferTest, BasicEnqueueDequeue) {
+    MPMCRingBuffer<int, 8> buffer;
     
     int value = 42;
     EXPECT_TRUE(buffer.enqueue(std::move(value)));
@@ -32,8 +32,8 @@ TEST_F(VyukovRingBufferTest, BasicEnqueueDequeue) {
     EXPECT_EQ(result, 42);
 }
 
-TEST_F(VyukovRingBufferTest, EnqueueByReference) {
-    VyukovRingBuffer<int, 8> buffer;
+TEST_F(MPMCRingBufferTest, EnqueueByReference) {
+    MPMCRingBuffer<int, 8> buffer;
     
     int value = 123;
     EXPECT_TRUE(buffer.enqueue(value)); // Copy version
@@ -43,15 +43,15 @@ TEST_F(VyukovRingBufferTest, EnqueueByReference) {
     EXPECT_EQ(result, 123);
 }
 
-TEST_F(VyukovRingBufferTest, EmptyBufferDequeue) {
-    VyukovRingBuffer<int, 8> buffer;
+TEST_F(MPMCRingBufferTest, EmptyBufferDequeue) {
+    MPMCRingBuffer<int, 8> buffer;
     
     int result;
     EXPECT_FALSE(buffer.dequeue(result));
 }
 
-TEST_F(VyukovRingBufferTest, FullBufferEnqueue) {
-    VyukovRingBuffer<int, 4> buffer; // Small buffer for easier testing
+TEST_F(MPMCRingBufferTest, FullBufferEnqueue) {
+    MPMCRingBuffer<int, 4> buffer; // Small buffer for easier testing
     
     // Fill the buffer completely
     for (int i = 0; i < 4; ++i) {
@@ -62,8 +62,8 @@ TEST_F(VyukovRingBufferTest, FullBufferEnqueue) {
     EXPECT_FALSE(buffer.enqueue(999));
 }
 
-TEST_F(VyukovRingBufferTest, FillAndDrainCycle) {
-    VyukovRingBuffer<int, 8> buffer;
+TEST_F(MPMCRingBufferTest, FillAndDrainCycle) {
+    MPMCRingBuffer<int, 8> buffer;
     
     // Fill buffer
     for (int i = 0; i < 8; ++i) {
@@ -82,8 +82,8 @@ TEST_F(VyukovRingBufferTest, FillAndDrainCycle) {
     EXPECT_FALSE(buffer.dequeue(result));
 }
 
-TEST_F(VyukovRingBufferTest, MultipleEnqueueDequeueCycles) {
-    VyukovRingBuffer<int, 8> buffer;
+TEST_F(MPMCRingBufferTest, MultipleEnqueueDequeueCycles) {
+    MPMCRingBuffer<int, 8> buffer;
     
     for (int cycle = 0; cycle < 10; ++cycle) {
         // Fill buffer
@@ -100,8 +100,8 @@ TEST_F(VyukovRingBufferTest, MultipleEnqueueDequeueCycles) {
     }
 }
 
-TEST_F(VyukovRingBufferTest, PartialFillDrain) {
-    VyukovRingBuffer<int, 8> buffer;
+TEST_F(MPMCRingBufferTest, PartialFillDrain) {
+    MPMCRingBuffer<int, 8> buffer;
     
     // Add 3 items
     for (int i = 0; i < 3; ++i) {
@@ -130,8 +130,8 @@ TEST_F(VyukovRingBufferTest, PartialFillDrain) {
 }
 
 // String tests to verify move semantics work properly
-TEST_F(VyukovRingBufferTest, StringMoveSemantics) {
-    VyukovRingBuffer<std::string, 4> buffer;
+TEST_F(MPMCRingBufferTest, StringMoveSemantics) {
+    MPMCRingBuffer<std::string, 4> buffer;
     
     std::string test_str = "Hello, World!";
     std::string original = test_str;
@@ -145,8 +145,8 @@ TEST_F(VyukovRingBufferTest, StringMoveSemantics) {
 }
 
 // Stress tests for single-threaded scenarios
-TEST_F(VyukovRingBufferTest, LargeNumberOfOperations) {
-    VyukovRingBuffer<int, 64> buffer;
+TEST_F(MPMCRingBufferTest, LargeNumberOfOperations) {
+    MPMCRingBuffer<int, 64> buffer;
     const int num_operations = 10000;
     
     for (int i = 0; i < num_operations; ++i) {
@@ -165,8 +165,8 @@ TEST_F(VyukovRingBufferTest, LargeNumberOfOperations) {
 }
 
 // Multi-threaded tests
-TEST_F(VyukovRingBufferTest, SingleProducerSingleConsumer) {
-    VyukovRingBuffer<int, 64> buffer;
+TEST_F(MPMCRingBufferTest, SingleProducerSingleConsumer) {
+    MPMCRingBuffer<int, 64> buffer;
     const int num_items = 10000;
     std::atomic<bool> producer_done{false};
     std::vector<int> consumed_items;
@@ -209,8 +209,8 @@ TEST_F(VyukovRingBufferTest, SingleProducerSingleConsumer) {
     }
 }
 
-TEST_F(VyukovRingBufferTest, MultipleProducersMultipleConsumers) {
-    VyukovRingBuffer<int, 128> buffer;
+TEST_F(MPMCRingBufferTest, MultipleProducersMultipleConsumers) {
+    MPMCRingBuffer<int, 128> buffer;
     const int num_producers = 4;
     const int num_consumers = 4;
     const int items_per_producer = 1000;
@@ -272,8 +272,8 @@ TEST_F(VyukovRingBufferTest, MultipleProducersMultipleConsumers) {
     EXPECT_EQ(all_consumed.size(), total_items);
 }
 
-TEST_F(VyukovRingBufferTest, HighContentionScenario) {
-    VyukovRingBuffer<int, 32> buffer; // Smaller buffer for more contention
+TEST_F(MPMCRingBufferTest, HighContentionScenario) {
+    MPMCRingBuffer<int, 32> buffer; // Smaller buffer for more contention
     const int num_threads = 8;
     const int operations_per_thread = 1000;
     std::atomic<int> total_enqueued{0};
@@ -328,8 +328,8 @@ TEST_F(VyukovRingBufferTest, HighContentionScenario) {
 }
 
 // Performance benchmark (not a real test, but useful for development)
-TEST_F(VyukovRingBufferTest, PerformanceBenchmark) {
-    VyukovRingBuffer<int, 1024> buffer;
+TEST_F(MPMCRingBufferTest, PerformanceBenchmark) {
+    MPMCRingBuffer<int, 1024> buffer;
     const int num_operations = 1000000;
     
     auto start = std::chrono::high_resolution_clock::now();
@@ -362,8 +362,8 @@ TEST_F(VyukovRingBufferTest, PerformanceBenchmark) {
 }
 
 // Edge case tests
-TEST_F(VyukovRingBufferTest, WrapAroundBehavior) {
-    VyukovRingBuffer<size_t, 4> buffer;
+TEST_F(MPMCRingBufferTest, WrapAroundBehavior) {
+    MPMCRingBuffer<size_t, 4> buffer;
     
     // Fill and drain multiple times to test wraparound
     for (size_t cycle = 0; cycle < 1000; ++cycle) {
@@ -396,8 +396,8 @@ struct ComplexType {
     }
 };
 
-TEST_F(VyukovRingBufferTest, ComplexTypeHandling) {
-    VyukovRingBuffer<ComplexType, 8> buffer;
+TEST_F(MPMCRingBufferTest, ComplexTypeHandling) {
+    MPMCRingBuffer<ComplexType, 8> buffer;
     
     ComplexType obj1(1, "first");
     ComplexType obj2(2, "second");

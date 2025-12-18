@@ -2,7 +2,6 @@
 #include "caduvelox/jobs/IoJob.hpp"
 #include "caduvelox/logger/Logger.hpp"
 #include "caduvelox/ring_buffer/BufferRingCoordinator.hpp"
-#include "caduvelox/threading/AffinityWorkerPool.hpp"
 #include <liburing.h>
 #include <cerrno>
 #include <cstring>
@@ -184,14 +183,6 @@ void Server::handleCompletion(struct io_uring_cqe* cqe) {
 
 std::shared_ptr<caduvelox::BufferRingCoordinator> Server::getBufferRingCoordinator() const {
     return buffer_ring_coordinator_;
-}
-
-void Server::setAffinityWorkerPool(std::shared_ptr<caduvelox::AffinityWorkerPool> pool) {
-    affinity_worker_pool_ = std::move(pool);
-}
-
-std::shared_ptr<caduvelox::AffinityWorkerPool> Server::getAffinityWorkerPool() const {
-    return affinity_worker_pool_;
 }
 
 } // namespace caduvelox

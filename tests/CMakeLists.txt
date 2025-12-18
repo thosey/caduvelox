@@ -76,7 +76,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 set(TEST_SOURCES
     test_main.cpp
     # Utility/Data Structure Tests (architecture-agnostic)
-    util/ring_buffer/vyukov_ring_buffer_test.cpp
+    util/ring_buffer/mpmc_ring_buffer_test.cpp
     util/ring_buffer/notifying_ring_buffer_test.cpp
     # Router Unit Tests (architecture-agnostic)
     http_router_unit_test.cpp

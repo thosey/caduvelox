@@ -36,7 +36,7 @@ struct Slot {
 };
 
 template <typename T, size_t Size>
-class VyukovRingBuffer {
+class MPMCRingBuffer {
    private:
     static_assert(Size > 0 && is_power_of_two(Size), "Size must be a power of 2");
     
@@ -45,7 +45,7 @@ class VyukovRingBuffer {
     std::atomic<size_t> tail_;   
 
    public:
-    VyukovRingBuffer() : head_(0), tail_(0) {
+    MPMCRingBuffer() : head_(0), tail_(0) {
         for(size_t i = 0; i < Size; ++i) {
             slots_[i].sequence.store(i, std::memory_order_relaxed);
         }
