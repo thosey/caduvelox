@@ -49,10 +49,7 @@ bool BufferRingCoordinator::setupBufferRing(struct io_uring* ring) {
     buffer_ring_ = io_uring_setup_buf_ring(ring, buf_count_, buf_group_id_, 0, &err);
     if (!buffer_ring_ || err) {
         logger_.logError("Failed to setup buffer ring: " + std::string(strerror(err)));
-        ::munmap(buffer_block_, total_size);
-        buffer_block_ = nullptr;
-        buf_count_ = 0;
-        buffer_ring_ = nullptr;
+        cleanupBufferRing();
         return false;
     }
 
