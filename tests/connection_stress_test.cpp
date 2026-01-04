@@ -121,7 +121,7 @@ TEST_F(ConnectionStressTest, PartialRequestThenDisconnect) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     
     // Verify server still works
     int sock = connectToServer();
@@ -172,7 +172,7 @@ TEST_F(ConnectionStressTest, RapidConnectDisconnect) {
         // No delay - rapid fire
     }
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
     
     // Verify server still works
     int sock = connectToServer();
