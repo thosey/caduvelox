@@ -186,7 +186,7 @@ bool KTLSJob::enableKTLS() {
     logger_.logError("KTLSJob: kTLS not available for fd=" + std::to_string(client_fd_) + 
                     " - TLS version: " + (version ? version : "unknown") + 
                     ", cipher: " + (cipher ? cipher : "unknown") + 
-                    ". kTLS requires specific cipher/version combinations.");
+                    ". kTLS requires both send and recv for io_uring operations.");
     
     return false;
 }
