@@ -152,10 +152,18 @@ bool KTLSJob::performHandshakeStep(Server& server) {
     switch (ssl_error) {
     case SSL_ERROR_WANT_READ:
         submitPollOperation(server, POLLIN);
+        // Check if submitPollOperation failed (state changed to ERROR_STATE)
+        if (state_ == State::ERROR_STATE) {
+            return false;  // Failed to submit, trigger cleanup
+        }
         return true;  // Continue processing
 
     case SSL_ERROR_WANT_WRITE:
         submitPollOperation(server, POLLOUT);
+        // Check if submitPollOperation failed (state changed to ERROR_STATE)
+        if (state_ == State::ERROR_STATE) {
+            return false;  // Failed to submit, trigger cleanup
+        }
         return true;  // Continue processing
 
     default:
