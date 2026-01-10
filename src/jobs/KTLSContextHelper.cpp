@@ -29,10 +29,18 @@ SSL_CTX* KTLSContextHelper::createServerContext(const std::string& cert_path, co
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
     Logger::getInstance().logMessage("KTLSContextHelper: Configured for TLS 1.2+ with kTLS preference");
 
-    // Use a more permissive cipher list that includes kTLS-compatible ciphers
-    // but falls back to others if needed for compatibility
-    if (!SSL_CTX_set_cipher_list(ctx, "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-CHACHA20-POLY1305:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5")) {
+    // Restrict to kTLS-compatible ciphers only (AES-GCM)
+    // Modern kernels (5.2+) support both TLS 1.2 and 1.3 with AES-GCM
+    // CHACHA20-POLY1305 is NOT supported by kernel TLS and causes handshake failures
+    if (!SSL_CTX_set_cipher_list(ctx, "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256")) {
         Logger::getInstance().logError("KTLSContextHelper: Failed to set cipher list");
+        SSL_CTX_free(ctx);
+        return nullptr;
+    }
+    
+    // For TLS 1.3, also restrict ciphersuites to AES-GCM variants
+    if (!SSL_CTX_set_ciphersuites(ctx, "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256")) {
+        Logger::getInstance().logError("KTLSContextHelper: Failed to set TLS 1.3 ciphersuites");
         SSL_CTX_free(ctx);
         return nullptr;
     }
