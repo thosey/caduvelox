@@ -17,7 +17,7 @@ namespace caduvelox {
  * This provides true zero-copy transfers without userspace buffers.
  * The pipe acts as a small kernel buffer that's constantly filled/drained.
  */
-class SpliceFileJob : public IoJob, public std::enable_shared_from_this<SpliceFileJob> {
+class SpliceFileJob : public IoJob {
 public:
     using CompletionCallback = std::function<void(int client_fd, size_t bytes_transferred)>;
     using ErrorCallback = std::function<void(int client_fd, int error)>;

@@ -38,7 +38,7 @@ class Server;
  *       }
  *   );
  */
-class KTLSJob : public IoJob, public std::enable_shared_from_this<KTLSJob> {
+class KTLSJob : public IoJob {
 public:
     // TLS handshake states
     enum class State {

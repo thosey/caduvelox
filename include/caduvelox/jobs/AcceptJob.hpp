@@ -11,7 +11,7 @@ namespace caduvelox {
  * Job for accepting new connections using multishot accept.
  * Always uses io_uring_prep_multishot_accept for continuous connection acceptance.
  */
-class AcceptJob : public IoJob, public std::enable_shared_from_this<AcceptJob> {
+class AcceptJob : public IoJob {
 public:
     using ConnectionCallback = std::function<void(int client_fd, const sockaddr* addr, socklen_t addrlen)>;
     using ErrorCallback = std::function<void(int error)>;
