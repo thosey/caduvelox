@@ -173,7 +173,7 @@ void SingleRingHttpServer::startAccepting() {
     } else {
         Logger::getInstance().logError("HttpServer: Failed to register AcceptJob");
         // CRITICAL: Use pool-aware free, not delete
-        AcceptJob::freePoolAllocated(accept_job);
+        PoolManager::deallocate(accept_job);
     }
 }
 
@@ -204,7 +204,7 @@ void SingleRingHttpServer::handleNewConnection(int client_fd, const sockaddr* ad
     
     if (ktls_enabled_) {
         // Start KTLS handshake for this connection
-        auto ktls_job = KTLSJob::createFromPool(
+        auto ktls_job = PoolManager::allocate<KTLSJob>(
             client_fd,
             ssl_ctx_,
             [this](int fd, SSL* ssl) {
@@ -230,7 +230,7 @@ void SingleRingHttpServer::handleNewConnection(int client_fd, const sockaddr* ad
             job_server_.submit();
         } else {
             Logger::getInstance().logError("HttpServer: Failed to register KTLS job");
-            KTLSJob::freePoolAllocated(ktls_job);
+            PoolManager::deallocate(ktls_job);
             close(client_fd);
         }
     } else {
@@ -244,7 +244,7 @@ void SingleRingHttpServer::handleNewConnection(int client_fd, const sockaddr* ad
 }
 
 void SingleRingHttpServer::createConnectionHandler(int client_fd) {
-    auto connection_job = HttpConnectionJob::createFromPool(client_fd, job_server_, router_, this);
+    auto connection_job = PoolManager::allocate<HttpConnectionJob>(client_fd, job_server_, router_, this, 1024 * 1024);
     
     if (!connection_job) {
         Logger::getInstance().logError("HttpServer: Failed to allocate HttpConnectionJob from pool");
@@ -339,17 +339,6 @@ int SingleRingHttpServer::createServerSocket(int port, const std::string& bind_a
 
 // HttpConnectionJob implementation
 // Pool-allocated only - managed via cleanup callbacks (no shared_ptr needed)
-
-HttpConnectionJob* HttpConnectionJob::createFromPool(
-    int client_fd, 
-    Server& job_server,
-    const HttpRouter& router,
-    SingleRingHttpServer* http_server,
-    size_t max_request_size) {
-    
-    return PoolManager::allocate<HttpConnectionJob>(
-        client_fd, job_server, router, http_server, max_request_size);
-}
 
 HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router, 
                                    SingleRingHttpServer* http_server, size_t max_request_size)

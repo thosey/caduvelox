@@ -51,26 +51,6 @@ public:
     using SuccessCallback = std::function<void(int client_fd, SSL* ssl)>;
     using ErrorCallback = std::function<void(int client_fd, int error_code)>;
 
-    /**
-     * Create KTLS job using lock-free pool allocation.
-     * @param client_fd Socket file descriptor for the client connection
-     * @param ssl_ctx OpenSSL context configured for kTLS (TLS 1.2, AES128-GCM-SHA256)
-     * @param on_success Called when kTLS is ready for data transfer
-     * @param on_error Called if handshake fails
-     * @return Pointer to pool-allocated KTLSJob, or nullptr if pool exhausted
-     */
-    static KTLSJob* createFromPool(
-        int client_fd,
-        SSL_CTX* ssl_ctx,
-        SuccessCallback on_success,
-        ErrorCallback on_error
-    );
-
-    /**
-     * Free a pool-allocated KTLSJob (for error cleanup before submission).
-     */
-    static void freePoolAllocated(KTLSJob* job);
-
     ~KTLSJob() override;
 
     // IoJob interface
@@ -102,7 +82,6 @@ private:
     SSL* ssl_;                  // SSL connection (owned)
     State state_;
     bool ktls_enabled_;
-    bool is_pool_allocated_ = false;  // Track if this job came from pool
     Logger& logger_;
 
     // Callbacks

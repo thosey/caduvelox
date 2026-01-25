@@ -78,7 +78,6 @@ private:
 
     int fd_;
     bool owns_data_;
-    bool is_pool_allocated_ = false;  // Track if this job came from pool
     std::unique_ptr<char[]> owned_data_;
     const char* data_ptr_;
     size_t total_length_;

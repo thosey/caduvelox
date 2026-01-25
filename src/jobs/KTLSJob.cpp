@@ -24,25 +24,6 @@ namespace {
 
 namespace caduvelox {
 
-KTLSJob* KTLSJob::createFromPool(
-    int client_fd,
-    SSL_CTX* ssl_ctx,
-    SuccessCallback on_success,
-    ErrorCallback on_error
-) {
-    KTLSJob* job = PoolManager::allocate<KTLSJob>(client_fd, ssl_ctx, std::move(on_success), std::move(on_error));
-    if (job) {
-        job->is_pool_allocated_ = true;
-    }
-    return job;
-}
-
-void KTLSJob::freePoolAllocated(KTLSJob* job) {
-    if (job) {
-        PoolManager::deallocate<KTLSJob>(job);
-    }
-}
-
 KTLSJob::KTLSJob(int client_fd, SSL_CTX* ssl_ctx, SuccessCallback on_success, ErrorCallback on_error)
     : client_fd_(client_fd)
     , ssl_ctx_(ssl_ctx)
@@ -306,7 +287,7 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
     
     if (state_ == State::ERROR_STATE || state_ == State::KTLS_READY) {
         // Job finished (success or error), but check if all operations completed
-        if (pending_operations_ == 0 && is_pool_allocated_) {
+        if (pending_operations_ == 0) {
             return cleanupKTLSJob;
         }
         // Still have pending operations, don't cleanup yet
@@ -320,7 +301,7 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
             if (cqe->res == -ECANCELED) {
                 // Timeout was canceled, check if we should cleanup now
                 if ((state_ == State::ERROR_STATE || state_ == State::KTLS_READY) && 
-                    pending_operations_ == 0 && is_pool_allocated_) {
+                    pending_operations_ == 0) {
                     return cleanupKTLSJob;
                 }
                 return std::nullopt;
@@ -336,7 +317,7 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
             on_error_(client_fd_, cqe->res);
         }
         // Return cleanup only if all operations completed
-        if (pending_operations_ == 0 && is_pool_allocated_) {
+        if (pending_operations_ == 0) {
             return cleanupKTLSJob;
         }
         return std::nullopt;
@@ -346,7 +327,7 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
     if (!performHandshakeStep(server)) {
         // Error occurred or job completed - return cleanup only if all operations done
         if ((state_ == State::ERROR_STATE || state_ == State::KTLS_READY) && 
-            pending_operations_ == 0 && is_pool_allocated_) {
+            pending_operations_ == 0) {
             return cleanupKTLSJob;
         }
     }

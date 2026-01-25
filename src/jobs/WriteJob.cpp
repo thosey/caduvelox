@@ -34,7 +34,6 @@ WriteJob* WriteJob::createFromPoolWithOwnedData(int fd, std::unique_ptr<char[]> 
         return nullptr; // Pool exhausted
     }
     
-    job->is_pool_allocated_ = true;
     job->data_ptr_ = data.get();
     job->owned_data_ = std::move(data);
     job->total_length_ = length;
@@ -52,7 +51,6 @@ WriteJob* WriteJob::createFromPoolWithBorrowedData(int fd, const char* data, siz
         return nullptr; // Pool exhausted
     }
     
-    job->is_pool_allocated_ = true;
     job->data_ptr_ = data;
     job->total_length_ = length;
     job->bytes_written_ = 0;
@@ -72,7 +70,7 @@ WriteJob* WriteJob::createFromPoolFromString(int fd, const std::string& data,
 }
 
 void WriteJob::freePoolAllocated(WriteJob* job) {
-    if (job && job->is_pool_allocated_) {
+    if (job) {
         PoolManager::deallocate<WriteJob>(job);
     }
 }
@@ -84,11 +82,7 @@ std::optional<IoJob::CleanupCallback> WriteJob::handleCompletion(Server& server,
         if (on_error_) {
             on_error_(fd_, -result);
         }
-        // Return cleanup function if pool allocated
-        if (is_pool_allocated_) {
-            return cleanupWriteJob;
-        }
-        return std::nullopt; // Complete on error
+        return cleanupWriteJob;
     }
     
     bytes_written_ += result;
@@ -98,11 +92,7 @@ std::optional<IoJob::CleanupCallback> WriteJob::handleCompletion(Server& server,
         if (on_complete_) {
             on_complete_(fd_, bytes_written_);
         }
-        // Return cleanup function if pool allocated
-        if (is_pool_allocated_) {
-            return cleanupWriteJob;
-        }
-        return std::nullopt; // Complete on success
+        return cleanupWriteJob;
     }
     
     // Partial write - continue with remaining data

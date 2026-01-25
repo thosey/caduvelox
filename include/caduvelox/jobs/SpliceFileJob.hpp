@@ -74,7 +74,6 @@ private:
     uint64_t offset_;
     uint64_t remaining_;
     size_t total_transferred_;
-    bool is_pool_allocated_ = false;  // Track if this job came from pool
     
     int pipe_fds_[2];  // pipe[0] = read end, pipe[1] = write end
     size_t bytes_in_pipe_;  // Track how much data is currently in the pipe

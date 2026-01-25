@@ -150,26 +150,8 @@ class HttpConnectionJob : public IoJob {
     
 public:
     /**
-     * Create HTTP connection handler using lock-free pool allocation.
-     * Returns raw pointer - managed by pool lifecycle via cleanup callbacks.
-     * @param client_fd Client socket file descriptor
-     * @param job_server Reference to the io_uring server
-     * @param router HTTP router for request handling
-     * @param http_server Pointer to HTTP server (currently unused, kept for API compatibility)
-     * @param max_request_size Maximum request size in bytes
-     * @return Pointer to pool-allocated HttpConnectionJob, or nullptr if pool exhausted
-     */
-    static HttpConnectionJob* createFromPool(
-        int client_fd, 
-        Server& job_server,
-        const HttpRouter& router,
-        SingleRingHttpServer* http_server = nullptr,
-        size_t max_request_size = 1024 * 1024
-    );
-
-    /**
      * Start reading from the connection
-     * Must be called after the object is created and in a shared_ptr
+     * Must be called after the object is created
      */
     void start();
 

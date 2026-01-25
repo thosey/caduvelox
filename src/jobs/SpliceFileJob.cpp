@@ -51,7 +51,6 @@ SpliceFileJob* SpliceFileJob::createFromPool(
     
     SpliceFileJob* job = PoolManager::allocate<SpliceFileJob>(client_fd, file_fd, offset, length);
     if (job) {
-        job->is_pool_allocated_ = true;
         job->on_complete_ = std::move(on_complete);
         job->on_error_ = std::move(on_error);
     }
@@ -114,11 +113,7 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
             if (on_error_) {
                 on_error_(client_fd_, -result);
             }
-            // Return cleanup function if pool allocated
-            if (is_pool_allocated_) {
-                return cleanupSpliceFileJob;
-            }
-            return std::nullopt; // Complete on error
+            return cleanupSpliceFileJob;
         }
         
         if (state_ == SplicingFileToPipe) {
@@ -168,11 +163,7 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
                 if (on_complete_) {
                     on_complete_(client_fd_, total_transferred_);
                 }
-                // Return cleanup function if pool allocated
-                if (is_pool_allocated_) {
-                    return cleanupSpliceFileJob;
-                }
-                return std::nullopt; // Complete transfer
+                return cleanupSpliceFileJob;
             }
         }
         
