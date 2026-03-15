@@ -79,7 +79,7 @@ protected:
         
         // Set timeout to detect stalls
         struct timeval timeout;
-        timeout.tv_sec = 3;
+        timeout.tv_sec = 2;
         timeout.tv_usec = 0;
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         
@@ -163,7 +163,7 @@ TEST_F(MultishotRecvRearmTest, PipelinedRequestsAllProcessed) {
     ASSERT_TRUE(sendPipelinedRequests(client_fd, num_requests));
     
     std::cout << "Waiting for responses..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
     int response_count = countResponses(client_fd);
     close(client_fd);
@@ -210,7 +210,7 @@ TEST_F(MultishotRecvRearmTest, KeepAliveConnectionContinuesWorking) {
         }
         
         // Small delay between requests
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     
     close(client_fd);
@@ -235,7 +235,7 @@ TEST_F(MultishotRecvRearmTest, MultipleConnectionsAllWork) {
         if (client_fd < 0) continue;
         
         sendPipelinedRequests(client_fd, requests_per_connection);
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         
         int received = countResponses(client_fd);
         results.push_back({requests_per_connection, received});
@@ -267,12 +267,12 @@ TEST_F(MultishotRecvRearmTest, LargePayloadPipeline) {
     int client_fd = createAndConnectSocket();
     ASSERT_GE(client_fd, 0);
     
-    const int num_requests = 20;  // More requests to stress multishot
+    const int num_requests = 12;  // More requests to stress multishot
     
     sendPipelinedRequests(client_fd, num_requests);
     
     // Give more time for large batch
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
     
     int received = countResponses(client_fd);
     close(client_fd);

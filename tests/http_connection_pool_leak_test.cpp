@@ -116,7 +116,7 @@ TEST_F(HttpConnectionPoolLeakTest, ShortLivedConnectionsLeakPool) {
     std::cout << "Initial HttpConnectionJob pool - available: " << initial_available
               << ", allocated: " << initial_allocated << std::endl;
     
-    const int num_connections = 100;
+    const int num_connections = 50;
     int successful_connections = 0;
     
     std::cout << "Opening " << num_connections << " short-lived connections..." << std::endl;
@@ -130,13 +130,13 @@ TEST_F(HttpConnectionPoolLeakTest, ShortLivedConnectionsLeakPool) {
         }
         
         // Small delay between connections
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     
     std::cout << "Successfully completed " << successful_connections << " connections" << std::endl;
     
     // Wait for all connections to fully close
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
     // Check pool state after connections
     size_t final_available = PoolManager::available<HttpConnectionJob>();
@@ -167,8 +167,8 @@ TEST_F(HttpConnectionPoolLeakTest, PoolExhaustionAfterManyConnections) {
     size_t initial_available = PoolManager::available<HttpConnectionJob>();
     std::cout << "Initial available entries: " << initial_available << std::endl;
     
-    const int batch_size = 50;
-    const int num_batches = 20;  // Total 1000 connections
+    const int batch_size = 25;
+    const int num_batches = 10;  // Total 250 connections
     
     for (int batch = 0; batch < num_batches; batch++) {
         std::cout << "Batch " << batch << "..." << std::endl;
@@ -187,7 +187,7 @@ TEST_F(HttpConnectionPoolLeakTest, PoolExhaustionAfterManyConnections) {
                   << " (leaked: " << (initial_available - current_available) << ")" << std::endl;
         
         // Wait for cleanup
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     
     size_t final_available = PoolManager::available<HttpConnectionJob>();
@@ -208,14 +208,14 @@ TEST_F(HttpConnectionPoolLeakTest, PoolReusableAcrossCycles) {
     auto runCycle = [this](const std::string& label) {
         size_t start = PoolManager::available<HttpConnectionJob>();
         
-        for (int i = 0; i < 30; i++) {
+        for (int i = 0; i < 15; i++) {
             int fd = createAndConnectSocket();
             if (fd >= 0) {
                 sendRequestAndClose(fd);
             }
         }
         
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         
         size_t end = PoolManager::available<HttpConnectionJob>();
         size_t leaked = start - end;

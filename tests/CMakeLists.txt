@@ -147,8 +147,8 @@ enable_testing()
 
 # Add the main test executable (runs all tests together)
 add_test(NAME CaduveloxTests COMMAND caduvelox_tests)
-# Set timeout for full test suite - StaticHttpsServerTests are slow (~15s each * 7 tests)
-set_tests_properties(CaduveloxTests PROPERTIES TIMEOUT 300)
+# Set timeout for full test suite - includes StaticHttpsServerTests and new pool/shutdown tests
+set_tests_properties(CaduveloxTests PROPERTIES TIMEOUT 600)
 
 # Add individual test suites for better granularity
 add_test(NAME RingBufferTests COMMAND caduvelox_tests --gtest_filter="*RingBufferTest.*")

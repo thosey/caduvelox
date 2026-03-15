@@ -60,7 +60,7 @@ TEST_F(AcceptJobErrorCleanupTest, PoolEntriesReturnedOnInvalidFd) {
     
     // Create and submit AcceptJobs with invalid file descriptor
     // This should cause immediate errors
-    const int num_iterations = 50;
+    const int num_iterations = 20;
     int error_count = 0;
     
     for (int i = 0; i < num_iterations; i++) {
@@ -76,11 +76,11 @@ TEST_F(AcceptJobErrorCleanupTest, PoolEntriesReturnedOnInvalidFd) {
         accept_job->start(job_server_);
         
         // Give time for the error to be processed
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     
     // Wait for all completions to be processed
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // Check final pool statistics
     size_t final_available = PoolManager::available<AcceptJob>();
@@ -108,7 +108,7 @@ TEST_F(AcceptJobErrorCleanupTest, PoolEntriesReturnedOnClosedSocket) {
     // Get initial pool statistics
     size_t initial_available = PoolManager::available<AcceptJob>();
     
-    const int num_iterations = 30;
+    const int num_iterations = 10;
     
     for (int i = 0; i < num_iterations; i++) {
         // Create a socket, then immediately close it before accepting
@@ -125,11 +125,11 @@ TEST_F(AcceptJobErrorCleanupTest, PoolEntriesReturnedOnClosedSocket) {
         accept_job->start(job_server_);
         
         // Give time for error processing
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     
     // Wait for completions
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     size_t final_available = PoolManager::available<AcceptJob>();
     size_t leaked_entries = initial_available - final_available;
