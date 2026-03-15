@@ -79,9 +79,11 @@ public:
     void setRouter(const HttpRouter& router);
 
     /**
-     * Set KTLS context (for multi-ring server)
+     * Set KTLS context (for multi-ring setup)
+     * @param ssl_ctx The SSL context to use
+     * @param take_ownership If true, this instance will free the context on destruction
      */
-    void setKTLSContext(SSL_CTX* ssl_ctx);
+    void setKTLSContext(SSL_CTX* ssl_ctx, bool take_ownership = true);
 
     /**
      * Start listening on an existing socket fd (for multi-ring with SO_REUSEPORT)
@@ -97,6 +99,7 @@ private:
     bool running_;
     bool ktls_enabled_;
     SSL_CTX* ssl_ctx_;  // For KTLS support
+    bool owns_ssl_ctx_;  // Whether this instance should free ssl_ctx_
 
     /**
      * Start accepting connections

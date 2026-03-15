@@ -55,8 +55,10 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
             return std::nullopt; // Continue operation
         }
         
-        // Unrecoverable error - job is complete
-        return std::nullopt; // End job on unrecoverable error
+        // Unrecoverable error - return job to pool
+        return [](IoJob* job) {
+            PoolManager::deallocate(static_cast<AcceptJob*>(job));
+        };
     }
     
     // For multishot accept, result==0 can indicate setup completion, not a real connection

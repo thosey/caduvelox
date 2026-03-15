@@ -34,6 +34,7 @@ SingleRingHttpServer::SingleRingHttpServer(Server& job_server)
     , running_(false)
     , ktls_enabled_(false)
     , ssl_ctx_(nullptr)
+    , owns_ssl_ctx_(true)  // By default, owns the SSL context
 {
     // HTTP processing happens inline on io_uring thread (no thread ping-pong)
 }
@@ -41,7 +42,8 @@ SingleRingHttpServer::SingleRingHttpServer(Server& job_server)
 SingleRingHttpServer::~SingleRingHttpServer() {
     stop();
     
-    if (ssl_ctx_) {
+    // Only free SSL context if we own it
+    if (ssl_ctx_ && owns_ssl_ctx_) {
         KTLSContextHelper::freeContext(ssl_ctx_);
         ssl_ctx_ = nullptr;
     }
@@ -699,8 +701,9 @@ void SingleRingHttpServer::setRouter(const HttpRouter& router) {
     router_ = router;
 }
 
-void SingleRingHttpServer::setKTLSContext(SSL_CTX* ssl_ctx) {
+void SingleRingHttpServer::setKTLSContext(SSL_CTX* ssl_ctx, bool take_ownership) {
     ssl_ctx_ = ssl_ctx;
+    owns_ssl_ctx_ = take_ownership;
 }
 
 bool SingleRingHttpServer::listenOnFd(int server_fd) {

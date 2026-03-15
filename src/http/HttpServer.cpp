@@ -79,8 +79,8 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
         // Share the router (read-only after setup)
         http_server->setRouter(router_);
         
-        // Set KTLS context
-        http_server->setKTLSContext(ssl_ctx_);
+        // Set KTLS context (borrowed reference - parent HttpServer owns it)
+        http_server->setKTLSContext(ssl_ctx_, false);
         
         // Start listening on this ring's socket
         // We manually set the socket since we created it with SO_REUSEPORT
