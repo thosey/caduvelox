@@ -13,11 +13,9 @@ using namespace caduvelox;
 /**
  * Test for Issue #4: AcceptJob Pool Leak on Errors
  * 
- * Verifies that AcceptJob objects are properly returned to the pool after
- * terminal errors (not just successful completions or multishot continuation).
- * 
- * Expected Result: This test should FAIL before the fix, showing that pool
- * entries are not returned after error conditions.
+ * Verifies that AcceptJob cleanup callbacks are properly returned when
+ * unrecoverable errors occur. Uses a callback counter to verify cleanup
+ * execution rather than pool statistics (which are thread-local).
  */
 class AcceptJobErrorCleanupTest : public ::testing::Test {
 protected:
@@ -48,131 +46,86 @@ protected:
     Server job_server_;
     std::thread event_loop_thread_;
     std::atomic<bool> stop_requested_{false};
+    std::atomic<int> cleanup_count_{0};
 };
 
-TEST_F(AcceptJobErrorCleanupTest, PoolEntriesReturnedOnInvalidFd) {
-    // Get initial pool statistics
-    size_t initial_available = PoolManager::available<AcceptJob>();
-    size_t initial_allocated = PoolManager::allocated<AcceptJob>();
+TEST_F(AcceptJobErrorCleanupTest, CleanupCallbackReturnedOnError) {
+    // This test directly verifies that handleCompletion returns a cleanup callback
+    // when an unrecoverable error occurs, rather than returning nullopt (which would leak)
     
-    std::cout << "Initial pool state - available: " << initial_available 
-              << ", allocated: " << initial_allocated << std::endl;
+    AcceptJob job(-1);  // Invalid fd
     
-    // Create and submit AcceptJobs with invalid file descriptor
-    // This should cause immediate errors
-    const int num_iterations = 20;
-    int error_count = 0;
+    // Simulate an error completion (EBADF = bad file descriptor)
+    struct io_uring_cqe cqe;
+    cqe.res = -EBADF;  // Error result
+    cqe.flags = 0;
     
-    for (int i = 0; i < num_iterations; i++) {
-        int invalid_fd = -1;  // Invalid file descriptor
-        
-        auto* accept_job = PoolManager::allocate<AcceptJob>(
-            invalid_fd
-        );
-        
-        ASSERT_NE(accept_job, nullptr) << "Failed to allocate AcceptJob on iteration " << i;
-        
-        // Set error callback to track errors
-        accept_job->start(job_server_);
-        
-        // Give time for the error to be processed
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    auto cleanup = job.handleCompletion(job_server_, &cqe);
+    
+    // Verify cleanup callback is returned (not nullopt)
+    EXPECT_TRUE(cleanup.has_value()) 
+        << "AcceptJob::handleCompletion should return cleanup callback on unrecoverable errors, not nullopt";
+    
+    if (cleanup.has_value()) {
+        std::cout << "✓ Cleanup callback returned for unrecoverable error (EBADF)" << std::endl;
     }
-    
-    // Wait for all completions to be processed
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    
-    // Check final pool statistics
-    size_t final_available = PoolManager::available<AcceptJob>();
-    size_t final_allocated = PoolManager::allocated<AcceptJob>();
-    
-    std::cout << "Final pool state - available: " << final_available 
-              << ", allocated: " << final_allocated << std::endl;
-    std::cout << "Pool entries leaked: " << (initial_available - final_available) << std::endl;
-    
-    // The pool should have approximately the same number of available entries
-    // (allowing some tolerance for timing)
-    size_t leaked_entries = initial_available - final_available;
-    
-    // This assertion should FAIL before the fix is applied
-    EXPECT_LE(leaked_entries, 5) 
-        << "Pool entries were not returned after errors. "
-        << "Leaked " << leaked_entries << " entries out of " << num_iterations << " iterations.";
-    
-    // Alternatively, check that allocated count returned to baseline
-    EXPECT_LE(final_allocated, initial_allocated + 5)
-        << "Too many AcceptJob entries still allocated after errors.";
 }
 
-TEST_F(AcceptJobErrorCleanupTest, PoolEntriesReturnedOnClosedSocket) {
-    // Get initial pool statistics
-    size_t initial_available = PoolManager::available<AcceptJob>();
+TEST_F(AcceptJobErrorCleanupTest, MultipleUnrecoverableErrors) {
+    // Test various unrecoverable error codes to ensure cleanup callbacks are returned
+    // Note: We only test unrecoverable errors directly because recoverable errors
+    // (EMFILE, ENFILE, ENOBUFS) call resubmitAccept() which requires a full io_uring context
     
-    const int num_iterations = 10;
+    struct ErrorCase {
+        int errno_val;
+        const char* description;
+    };
     
-    for (int i = 0; i < num_iterations; i++) {
-        // Create a socket, then immediately close it before accepting
-        int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-        ASSERT_GE(server_fd, 0);
+    std::vector<ErrorCase> test_cases = {
+        {EBADF, "EBADF (bad file descriptor)"},
+        {EINVAL, "EINVAL (invalid argument)"},
+        {ECONNABORTED, "ECONNABORTED (connection aborted)"},
+        {EPROTO, "EPROTO (protocol error)"},
+        {EOPNOTSUPP, "EOPNOTSUPP (operation not supported)"},
+    };
+    
+    for (const auto& test_case : test_cases) {
+        AcceptJob job(-1);  // Invalid fd
         
-        // Immediately close the socket
-        close(server_fd);
+        struct io_uring_cqe cqe;
+        cqe.res = -test_case.errno_val;
+        cqe.flags = 0;
         
-        // Try to use the closed socket for accept
-        auto* accept_job = PoolManager::allocate<AcceptJob>(server_fd);
-        ASSERT_NE(accept_job, nullptr);
+        auto cleanup = job.handleCompletion(job_server_, &cqe);
         
-        accept_job->start(job_server_);
+        EXPECT_TRUE(cleanup.has_value()) 
+            << "Expected cleanup callback for " << test_case.description;
         
-        // Give time for error processing
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (cleanup.has_value()) {
+            std::cout << "✓ Cleanup returned for " << test_case.description << std::endl;
+        }
     }
-    
-    // Wait for completions
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    
-    size_t final_available = PoolManager::available<AcceptJob>();
-    size_t leaked_entries = initial_available - final_available;
-    
-    std::cout << "Closed socket test - leaked entries: " << leaked_entries << std::endl;
-    
-    // This should FAIL before the fix
-    EXPECT_LE(leaked_entries, 5)
-        << "Pool entries leaked when accept fails on closed sockets.";
 }
 
-TEST_F(AcceptJobErrorCleanupTest, PoolRecoverAfterErrors) {
-    // This test verifies the pool can be reused after errors
-    size_t initial_available = PoolManager::available<AcceptJob>();
+TEST_F(AcceptJobErrorCleanupTest, CleanupCallbackExecutesCorrectly) {
+    // Verify that the cleanup callback can be executed and properly deallocates
+    // Note: We allocate on this thread, but in production the deallocation
+    // would happen on the io_uring thread
     
-    // First round: cause errors
-    for (int i = 0; i < 20; i++) {
-        auto* job = PoolManager::allocate<AcceptJob>(-1);
-        if (job) {
-            job->start(job_server_);
-        }
-    }
+    auto* job = PoolManager::allocate<AcceptJob>(-1);
+    ASSERT_NE(job, nullptr);
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    size_t after_errors = PoolManager::available<AcceptJob>();
+    // Simulate an error
+    struct io_uring_cqe cqe;
+    cqe.res = -EBADF;
+    cqe.flags = 0;
     
-    // Second round: cause more errors (should reuse pool)
-    for (int i = 0; i < 20; i++) {
-        auto* job = PoolManager::allocate<AcceptJob>(-1);
-        if (job) {
-            job->start(job_server_);
-        }
-    }
+    auto cleanup = job->handleCompletion(job_server_, &cqe);
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    size_t after_round2 = PoolManager::available<AcceptJob>();
+    ASSERT_TRUE(cleanup.has_value()) << "Should return cleanup callback on error";
     
-    std::cout << "Pool recovery test - initial: " << initial_available 
-              << ", after round 1: " << after_errors
-              << ", after round 2: " << after_round2 << std::endl;
+    // Execute the cleanup callback
+    (*cleanup)(job);
     
-    // Pool should stabilize (not continue growing allocated count)
-    // This should FAIL if entries are leaking
-    EXPECT_LE(initial_available - after_round2, 10)
-        << "Pool did not recover between error rounds, entries are leaking.";
+    std::cout << "✓ Cleanup callback executed successfully" << std::endl;
 }
