@@ -2,6 +2,13 @@
 
 A high-performance HTTPS static file server using Caduvelox with kTLS support.
 
+For an implementation walkthrough, see [CONNECTION_FLOW.md](./CONNECTION_FLOW.md).
+For a pragmatic design review, see [ARCHITECTURE_ASSESSMENT.md](./ARCHITECTURE_ASSESSMENT.md).
+For shutdown design options, see [SHUTDOWN_HARDENING_OPTIONS.md](./SHUTDOWN_HARDENING_OPTIONS.md).
+For `io_uring` cancel semantics, see [IO_URING_CANCELLATION.md](./IO_URING_CANCELLATION.md).
+For the recommended first shutdown design, see [SHARED_SHUTDOWN_STATE.md](./SHARED_SHUTDOWN_STATE.md).
+For a concrete implementation plan, see [SERVER_STATE_PLAN.md](./SERVER_STATE_PLAN.md).
+
 ## Features
 
 - HTTPS with kernel TLS (kTLS) offload

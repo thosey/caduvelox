@@ -15,7 +15,7 @@ HttpServer::HttpServer(int num_rings, unsigned queue_depth)
     : num_rings_(num_rings > 0 ? num_rings : std::thread::hardware_concurrency()),
       queue_depth_(queue_depth),
       ssl_ctx_(nullptr),
-      running_(false) {
+      state_(ServerState::Stopped) {
     
     Logger::getInstance().logMessage("HttpServer: Creating server with " + 
                                     std::to_string(num_rings_) + " service rings");
@@ -37,8 +37,8 @@ void HttpServer::addRoute(const std::string& method, const std::string& path_pat
 bool HttpServer::listenKTLS(int port, const std::string& cert_path, 
                                       const std::string& key_path,
                                       const std::string& bind_addr) {
-    if (running_) {
-        Logger::getInstance().logError("HttpServer: Server is already running");
+    if (!isStopped()) {
+        Logger::getInstance().logError("HttpServer: Server is not in Stopped state");
         return false;
     }
 
@@ -99,7 +99,7 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
                                         " initialized and listening");
     }
 
-    running_ = true;
+    state_.store(ServerState::Running, std::memory_order_release);
     
     Logger::getInstance().logMessage("HttpServer: All " + std::to_string(num_rings_) + 
                                     " rings listening on " + bind_addr + ":" + std::to_string(port));
@@ -108,7 +108,7 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
 }
 
 void HttpServer::run() {
-    if (!running_) {
+    if (!isRunning()) {
         Logger::getInstance().logError("HttpServer: Server not initialized");
         return;
     }
@@ -124,16 +124,19 @@ void HttpServer::run() {
     for (auto& ring : service_rings_) {
         ring->join();
     }
+
+    state_.store(ServerState::Stopped, std::memory_order_release);
     
     Logger::getInstance().logMessage("HttpServer: All service rings stopped");
 }
 
 void HttpServer::stop() {
-    if (!running_) {
+    ServerState expected = ServerState::Running;
+    if (!state_.compare_exchange_strong(expected, ServerState::Stopping,
+                                        std::memory_order_acq_rel,
+                                        std::memory_order_acquire)) {
         return;
     }
-
-    running_ = false;
 
     // Stop all HttpServers (which stops accepting)
     for (auto& http_server : http_servers_) {
@@ -147,6 +150,20 @@ void HttpServer::stop() {
         if (ring) {
             ring->stop();
         }
+    }
+
+    // If run() has not started the ring threads yet, or if they have already
+    // fully unwound, there is no join path left to transition us to Stopped.
+    bool any_ring_running = false;
+    for (const auto& ring : service_rings_) {
+        if (ring && ring->isRunning()) {
+            any_ring_running = true;
+            break;
+        }
+    }
+
+    if (!any_ring_running) {
+        state_.store(ServerState::Stopped, std::memory_order_release);
     }
 
     Logger::getInstance().logMessage("HttpServer: Server stopped");

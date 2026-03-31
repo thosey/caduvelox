@@ -3,11 +3,19 @@
 #include "caduvelox/ServiceRing.hpp"
 #include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/http/HttpRouter.hpp"
+#include <atomic>
 #include <vector>
 #include <memory>
 #include <string>
 
 namespace caduvelox {
+
+enum class ServerState {
+    Running,
+    Stopping,
+    Aborting,
+    Stopped
+};
 
 /**
  * HttpServer: High-performance HTTPS server with optimized multi-threaded architecture.
@@ -79,6 +87,16 @@ public:
      */
     int getNumRings() const { return num_rings_; }
 
+    /**
+     * Get current lifecycle state
+     */
+    ServerState getState() const { return state_.load(std::memory_order_acquire); }
+
+    bool isRunning() const { return getState() == ServerState::Running; }
+    bool isStopping() const { return getState() == ServerState::Stopping; }
+    bool isAborting() const { return getState() == ServerState::Aborting; }
+    bool isStopped() const { return getState() == ServerState::Stopped; }
+
 private:
     int createServerSocket(int port, const std::string& bind_addr);
 
@@ -91,7 +109,7 @@ private:
     HttpRouter router_;  // Shared router (read-only after setup)
     
     SSL_CTX* ssl_ctx_;
-    bool running_;
+    std::atomic<ServerState> state_;
 };
 
 } // namespace caduvelox

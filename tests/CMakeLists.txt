@@ -82,6 +82,8 @@ set(TEST_SOURCES
     http_router_unit_test.cpp
     # Logger Tests (file logging and rotation)
     logger_test.cpp
+    # HttpServer lifecycle state tests
+    http_server_state_test.cpp
     # Job-Based Architecture Tests (primary architecture)
     job_http_server_test.cpp
     job_http_pipelining_test.cpp
