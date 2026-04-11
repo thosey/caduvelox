@@ -84,6 +84,8 @@ set(TEST_SOURCES
     logger_test.cpp
     # HttpServer lifecycle state tests
     http_server_state_test.cpp
+    # Server state pointer wiring tests (Step 2 of SERVER_STATE_PLAN.md)
+    server_state_wiring_test.cpp
     # Job-Based Architecture Tests (primary architecture)
     job_http_server_test.cpp
     job_http_pipelining_test.cpp
@@ -155,6 +157,7 @@ set_tests_properties(CaduveloxTests PROPERTIES TIMEOUT 600)
 # Add individual test suites for better granularity
 add_test(NAME RingBufferTests COMMAND caduvelox_tests --gtest_filter="*RingBufferTest.*")
 add_test(NAME HttpServerTests COMMAND caduvelox_tests --gtest_filter="HttpServerTest.*")
+add_test(NAME ServerStatePtrTests COMMAND caduvelox_tests --gtest_filter="ServerStatePtrTest.*")
 add_test(NAME HttpParserTests COMMAND caduvelox_tests --gtest_filter="HttpParser*Test.*")
 add_test(NAME HttpRouterTests COMMAND caduvelox_tests --gtest_filter="HttpRouterUnitTest.*")
 add_test(NAME WriteMappingTests COMMAND caduvelox_tests --gtest_filter="WriteMappingRegression.*")

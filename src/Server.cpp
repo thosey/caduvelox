@@ -28,6 +28,7 @@ namespace caduvelox {
 
 Server::Server() 
     : ring_{}, running_(false),
+      server_state_(&local_state_),
       buffer_ring_coordinator_(std::make_shared<BufferRingCoordinator>()) {
 }
 
@@ -183,6 +184,22 @@ void Server::handleCompletion(struct io_uring_cqe* cqe) {
 
 std::shared_ptr<caduvelox::BufferRingCoordinator> Server::getBufferRingCoordinator() const {
     return buffer_ring_coordinator_;
+}
+
+void Server::bindToServerState(std::atomic<ServerState>* state) {
+    server_state_ = state;
+}
+
+ServerState Server::getServerState() const {
+    return server_state_->load(std::memory_order_acquire);
+}
+
+bool Server::isStopping() const {
+    return getServerState() == ServerState::Stopping;
+}
+
+bool Server::isAborting() const {
+    return getServerState() == ServerState::Aborting;
 }
 
 } // namespace caduvelox

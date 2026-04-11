@@ -1,5 +1,6 @@
 #pragma once
 
+#include "caduvelox/ServerState.hpp"
 #include "caduvelox/ServiceRing.hpp"
 #include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/http/HttpRouter.hpp"
@@ -9,13 +10,6 @@
 #include <string>
 
 namespace caduvelox {
-
-enum class ServerState {
-    Running,
-    Stopping,
-    Aborting,
-    Stopped
-};
 
 /**
  * HttpServer: High-performance HTTPS server with optimized multi-threaded architecture.

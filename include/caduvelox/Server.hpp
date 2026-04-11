@@ -1,8 +1,10 @@
 #pragma once
 
+#include "caduvelox/ServerState.hpp"
 #include "caduvelox/ring_buffer/BufferRingCoordinator.hpp"
 #include "caduvelox/logger/Logger.hpp"
 #include <liburing.h>
+#include <atomic>
 #include <memory>
 
 // Forward declarations
@@ -92,6 +94,21 @@ public:
      */
     struct io_uring* getRing() { return &ring_; }
 
+    /**
+     * Redirect state queries to an external atomic owned by a parent component.
+     * By default Server owns its own state; call this to share state across
+     * multiple Server instances so they all observe the same transitions.
+     * Must be called before the event loop starts.
+     */
+    void bindToServerState(std::atomic<ServerState>* state);
+
+    /**
+     * Query the lifecycle state.
+     */
+    ServerState getServerState() const;
+    bool isStopping() const;
+    bool isAborting() const;
+
 private:
     void processCompletions();
     void drainCompletions();
@@ -101,7 +118,14 @@ private:
     // Core io_uring state (stack allocated like original Server)
     struct io_uring ring_;
     bool running_;
-    
+
+    // Owned local state used when no external atomic has been installed.
+    std::atomic<ServerState> local_state_{ServerState::Running};
+
+    // Points to the active state atomic — either local_state_ (default) or an
+    // external atomic shared across multiple Server instances.
+    std::atomic<ServerState>* server_state_;
+
     // Buffer ring for zero-copy operations
     std::shared_ptr<BufferRingCoordinator> buffer_ring_coordinator_;
 };

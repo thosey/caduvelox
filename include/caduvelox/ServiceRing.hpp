@@ -62,6 +62,12 @@ public:
     Server& getServer() { return server_; }
 
     /**
+     * Bind this ring's Server to a shared state atomic owned by a parent component.
+     * All rings bound to the same atomic will observe state transitions together.
+     */
+    void bindToServerState(std::atomic<ServerState>* state) { server_.bindToServerState(state); }
+
+    /**
      * Get the ring ID
      */
     int getRingId() const { return ring_id_; }

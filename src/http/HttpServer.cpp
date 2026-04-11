@@ -92,6 +92,9 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
             return false;
         }
         
+        // Share the canonical server state so ring-local jobs can observe it.
+        ring->bindToServerState(&state_);
+
         service_rings_.push_back(std::move(ring));
         http_servers_.push_back(std::move(http_server));
         
