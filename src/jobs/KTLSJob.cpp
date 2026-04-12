@@ -116,6 +116,15 @@ bool KTLSJob::completeHandshake() {
 }
 
 bool KTLSJob::performHandshakeStep(Server& server) {
+    // During shutdown, stop extending the handshake poll chain and fail fast.
+    if (server.isStopping() || server.isAborting()) {
+        state_ = State::ERROR_STATE;
+        if (on_error_) {
+            on_error_(client_fd_, -ECANCELED);
+        }
+        return false;
+    }
+
     if (!ssl_initialized_ && !initializeSSL()) {
         return false;
     }

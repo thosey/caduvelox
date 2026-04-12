@@ -9,7 +9,6 @@ using namespace caduvelox;
 /**
  * Unit tests for Server::bindToServerState / getServerState / isStopping / isAborting.
  *
- * These tests exercise the state-pointer API added in Step 2 of SERVER_STATE_PLAN.md.
  * No io_uring initialisation is required — the state pointer accessors are pure
  * in-memory operations that work on an uninitialised Server.
  */

@@ -5,6 +5,7 @@
 #include "caduvelox/logger/Logger.hpp"
 #include <liburing.h>
 #include <atomic>
+#include <functional>
 #include <memory>
 
 // Forward declarations
@@ -109,6 +110,20 @@ public:
     bool isStopping() const;
     bool isAborting() const;
 
+    /**
+     * Register a function that sweeps ring-local job pools during shutdown.
+     * Called by SingleRingHttpServer so it can cancel idle multishot recv jobs
+     * without Server needing to know about specific job types.
+     * Must be installed before the event loop starts.
+     */
+    void setShutdownSweepFn(std::function<void(Server&)> fn);
+
+    /**
+     * Invoke the registered shutdown sweep (if any).
+     * Called by StopIoJob when the shutdown wake-up NOP completes on the ring thread.
+     */
+    void sweepLiveJobsForShutdown();
+
 private:
     void processCompletions();
     void drainCompletions();
@@ -125,6 +140,9 @@ private:
     // Points to the active state atomic — either local_state_ (default) or an
     // external atomic shared across multiple Server instances.
     std::atomic<ServerState>* server_state_;
+
+    // Optional ring-local shutdown sweep installed by SingleRingHttpServer.
+    std::function<void(Server&)> shutdown_sweep_fn_;
 
     // Buffer ring for zero-copy operations
     std::shared_ptr<BufferRingCoordinator> buffer_ring_coordinator_;

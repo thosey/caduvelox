@@ -1,6 +1,7 @@
 #pragma once
 
 #include "caduvelox/jobs/IoJob.hpp"
+#include "caduvelox/jobs/CancelJob.hpp"
 #include "caduvelox/Server.hpp"
 #include "caduvelox/util/ProvidedBufferToken.hpp"
 #include "caduvelox/util/PoolManager.hpp"
@@ -70,6 +71,13 @@ public:
     void prepareSqe(struct io_uring_sqe* sqe) override;
     std::optional<CleanupCallback> handleCompletion(Server& server, struct io_uring_cqe* cqe) override;
 
+    /**
+     * Submit an io_uring cancel SQE targeting this recv operation.
+     * Called by the ring-local shutdown sweep for idle keep-alive connections
+     * that would otherwise never hit a natural control boundary.
+     */
+    void requestShutdownCancel(Server& server) override;
+
     // Constructor must be public for pool allocation
     MultishotRecvJob(int fd, Handler handler);
 
@@ -94,6 +102,23 @@ void MultishotRecvJob<Handler>::prepareSqe(struct io_uring_sqe* sqe) {
     io_uring_prep_recv_multishot(sqe, fd_, nullptr, 0, 0);
     sqe->flags |= IOSQE_BUFFER_SELECT;
     io_uring_sqe_set_data(sqe, this);
+}
+
+template<ResponseHandler Handler>
+void MultishotRecvJob<Handler>::requestShutdownCancel(Server& server) {
+    // Submit a targeted cancel for this specific recv operation.
+    // The user_data on the original SQE was set to `this` in prepareSqe().
+    auto* cancel_job = PoolManager::allocate<CancelJob>(reinterpret_cast<uint64_t>(this));
+    if (!cancel_job) {
+        return; // Pool exhausted — recv will terminate naturally when the fd closes.
+    }
+    struct io_uring_sqe* sqe = server.registerJob(cancel_job);
+    if (sqe) {
+        cancel_job->prepareSqe(sqe);
+        server.submit();
+    } else {
+        PoolManager::deallocate(cancel_job);
+    }
 }
 
 template<ResponseHandler Handler>

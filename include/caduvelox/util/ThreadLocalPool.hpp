@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <new>
 #include <utility>
+#include <vector>
 
 namespace caduvelox {
 
@@ -39,6 +40,7 @@ public:
         : capacity_(capacity)
         , slab_(nullptr)
         , free_head_(nullptr)
+        , live_(capacity, 0)
     {
         if (capacity == 0) {
             return;
@@ -47,15 +49,15 @@ public:
         // Allocate aligned slab
         constexpr size_t alignment = alignof(Slot);
         size_t size = capacity * sizeof(Slot);
-        
+
         // aligned_alloc requires size to be multiple of alignment
         size = (size + alignment - 1) & ~(alignment - 1);
-        
+
         slab_ = static_cast<Slot*>(std::aligned_alloc(alignment, size));
         if (!slab_) {
             throw std::bad_alloc();
         }
-        
+
         // Initialize intrusive free list - link all slots together
         for (size_t i = 0; i < capacity - 1; ++i) {
             (slab_ + i)->next = slab_ + i + 1;
@@ -88,10 +90,13 @@ public:
         Slot* slot = free_head_;
         free_head_ = slot->next;
 
+        // Mark slot as live
+        live_[static_cast<size_t>(slot - slab_)] = 1;
+
         // Construct object in slot's storage
         T* ptr = reinterpret_cast<T*>(slot->storage);
         new (ptr) T(std::forward<Args>(args)...);
-        
+
         return ptr;
     }
 
@@ -103,11 +108,28 @@ public:
 
         // Destroy the object
         ptr->~T();
-        
-        // Push back to free list (intrusive)
+
+        // Mark slot as free
         Slot* slot = reinterpret_cast<Slot*>(ptr);
+        live_[static_cast<size_t>(slot - slab_)] = 0;
+
+        // Push back to free list (intrusive)
         slot->next = free_head_;
         free_head_ = slot;
+    }
+
+    /**
+     * Iterate every live (currently allocated) object and invoke callback(T&).
+     * Must only be called on the thread that owns this pool.
+     * The callback must not allocate or deallocate from this pool.
+     */
+    template<typename Callback>
+    void sweepLive(Callback&& callback) {
+        for (size_t i = 0; i < capacity_; ++i) {
+            if (live_[i]) {
+                callback(*reinterpret_cast<T*>(slab_[i].storage));
+            }
+        }
     }
 
     /**
@@ -139,8 +161,9 @@ public:
 
 private:
     size_t capacity_;
-    Slot* slab_;        
-    Slot* free_head_;   
+    Slot* slab_;
+    Slot* free_head_;
+    std::vector<uint8_t> live_;  // 1 = slot is live; 0 = slot is free
 };
 
 } // namespace caduvelox

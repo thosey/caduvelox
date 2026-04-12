@@ -80,9 +80,17 @@ bool SingleRingHttpServer::listen(int port, const std::string& bind_addr) {
     ktls_enabled_ = false;
     Logger::getInstance().logMessage("HttpServer: Listening on " + bind_addr + ":" + std::to_string(port));
 
+    // Install the ring-local shutdown sweep so idle keep-alive connections are
+    // cancelled promptly when the server enters Stopping/Aborting state.
+    job_server_.setShutdownSweepFn([](Server& server) {
+        PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
+            job.requestShutdownCancel(server);
+        });
+    });
+
     // Start accepting connections
     startAccepting();
-    
+
     return true;
 }
 
@@ -119,9 +127,15 @@ bool SingleRingHttpServer::listenKTLS(int port, const std::string& cert_path, co
     ktls_enabled_ = true;
     Logger::getInstance().logMessage("HttpServer: KTLS listening on " + bind_addr + ":" + std::to_string(port));
 
+    job_server_.setShutdownSweepFn([](Server& server) {
+        PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
+            job.requestShutdownCancel(server);
+        });
+    });
+
     // Start accepting connections
     startAccepting();
-    
+
     return true;
 }
 
@@ -342,7 +356,7 @@ int SingleRingHttpServer::createServerSocket(int port, const std::string& bind_a
 // HttpConnectionJob implementation
 // Pool-allocated only - managed via cleanup callbacks (no shared_ptr needed)
 
-HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router, 
+HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router,
                                    SingleRingHttpServer* http_server, size_t max_request_size)
     : client_fd_(client_fd)
     , job_server_(job_server)
@@ -354,6 +368,9 @@ HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const Ht
     , keep_alive_(true)  // Default to keep-alive for HTTP/1.1
     , pending_writes_(0)
     , close_pending_(false)
+    , active_read_job_(nullptr)
+    , read_cancel_pending_(false)
+    , deferred_close_fd_(-1)
 {
     
     request_buffer_.reserve(8192);
@@ -385,33 +402,36 @@ void HttpConnectionJob::startReading() {
     }
 
     reading_active_ = true;
-    
+
     // Create handler instance (encapsulates context + callbacks)
     HttpConnectionRecvHandler handler{this};
-    
+
     // Zero-copy path: use token-based MultishotRecvJob for inline processing on io_uring thread
     // Template policy pattern - type-safe, fully inlineable callbacks
     auto* read_job = PoolManager::allocate<MultishotRecvJob<HttpConnectionRecvHandler>>(
         client_fd_,
         handler               // Handler instance (no void* casting!)
     );
-    
+
     if (!read_job) {
         Logger::getInstance().logError("HttpConnectionJob: Failed to allocate MultishotRecvJob from pool");
         reading_active_ = false;
         return;
     }
-    
+
     struct io_uring_sqe* sqe = job_server_.registerJob(read_job);
     if (sqe) {
         // Configure the SQE for the ReadJob
         read_job->prepareSqe(sqe);
-        
+
         // Set buffer group for buffer selection
         if (auto buffer_coordinator = job_server_.getBufferRingCoordinator()) {
             sqe->buf_group = buffer_coordinator->getBufferGroupId();
         }
-        
+
+        // Track the active recv so closeConnection() and the shutdown sweep can cancel it.
+        active_read_job_ = read_job;
+
         // Submit the job
         job_server_.submit();
     } else {
@@ -423,6 +443,12 @@ void HttpConnectionJob::startReading() {
 }
 
 void HttpConnectionJob::handleDataReceived(const char* data, ssize_t len) {
+    // If closeConnection() was already called and set client_fd_ = -1, discard
+    // any remaining recv completions that arrive before the cancel fires.
+    if (client_fd_ < 0) {
+        return;
+    }
+
     if (len == 0) {
         // EOF - client disconnected
         Logger::getInstance().logMessage("HttpConnectionJob: Client disconnected fd=" + std::to_string(client_fd_));
@@ -452,8 +478,19 @@ void HttpConnectionJob::handleDataReceived(const char* data, ssize_t len) {
 }
 
 void HttpConnectionJob::handleReadError(int error) {
-    Logger::getInstance().logError("HttpConnectionJob: Read error fd=" + std::to_string(client_fd_) + 
-                                 ", error=" + std::to_string(error));
+    // The recv has terminated (error, EOF, or cancellation).
+    // Clear the active recv pointer BEFORE calling closeConnection() so it does
+    // not submit a second cancel for an already-terminated job.
+    active_read_job_ = nullptr;
+
+    if (error == -ECANCELED) {
+        // Expected during shutdown — log at a lower severity.
+        Logger::getInstance().logMessage("HttpConnectionJob: Recv cancelled (shutdown) fd=" +
+                                         std::to_string(client_fd_));
+    } else {
+        Logger::getInstance().logError("HttpConnectionJob: Read error fd=" + std::to_string(client_fd_) +
+                                       ", error=" + std::to_string(error));
+    }
     closeConnection();
 }
 
@@ -647,23 +684,63 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
 }
 
 void HttpConnectionJob::closeConnection() {
-    // If there are pending writes, defer the close
+    // Defer if writes are still in flight.
     if (pending_writes_ > 0) {
         close_pending_ = true;
-        Logger::getInstance().logMessage("HttpConnectionJob: Close deferred, pending writes=" + 
-                                       std::to_string(pending_writes_) + " fd=" + std::to_string(client_fd_));
+        Logger::getInstance().logMessage("HttpConnectionJob: Close deferred, pending writes=" +
+                                         std::to_string(pending_writes_) + " fd=" + std::to_string(client_fd_));
         return;
     }
-    
-    if (client_fd_ >= 0) {
-        Logger::getInstance().logMessage("[ACCESS] DISCONNECT fd=" + std::to_string(client_fd_));
-        close(client_fd_);
+
+    // If a multishot recv is still active and no cancel has been submitted yet,
+    // cancel it and defer the actual fd close until the cancel completes.
+    // Set client_fd_ = -1 immediately so any buffered recv completions arriving
+    // before the cancel fires are discarded by handleDataReceived().
+    if (active_read_job_ != nullptr && !read_cancel_pending_) {
+        deferred_close_fd_ = client_fd_;
         client_fd_ = -1;
+        if (submitRecvCancel()) {
+            read_cancel_pending_ = true;
+            close_pending_ = true;
+            Logger::getInstance().logMessage("HttpConnectionJob: Recv cancel submitted, deferring close fd=" +
+                                             std::to_string(deferred_close_fd_));
+            return;
+        }
+        // Cancel submission failed (pool or SQE exhausted) — fall through and
+        // close the fd immediately; the recv will terminate naturally with EBADF.
+        Logger::getInstance().logError("HttpConnectionJob: Failed to submit recv cancel, closing fd immediately");
     }
+
+    // Perform the actual close.
+    int fd_to_close = (deferred_close_fd_ >= 0) ? deferred_close_fd_ : client_fd_;
+    if (fd_to_close >= 0) {
+        Logger::getInstance().logMessage("[ACCESS] DISCONNECT fd=" + std::to_string(fd_to_close));
+        close(fd_to_close);
+    }
+
+    client_fd_ = -1;
+    deferred_close_fd_ = -1;
     reading_active_ = false;
     close_pending_ = false;
-    
+    read_cancel_pending_ = false;
+    // active_read_job_ should already be nullptr at this point (cleared by handleReadError)
     // Job will be returned to pool via cleanup callback
+}
+
+bool HttpConnectionJob::submitRecvCancel() {
+    auto* cancel_job = PoolManager::allocate<CancelJob>(
+        reinterpret_cast<uint64_t>(active_read_job_));
+    if (!cancel_job) {
+        return false;
+    }
+    struct io_uring_sqe* sqe = job_server_.registerJob(cancel_job);
+    if (sqe) {
+        cancel_job->prepareSqe(sqe);
+        job_server_.submit();
+        return true;
+    }
+    PoolManager::deallocate(cancel_job);
+    return false;
 }
 
 bool HttpConnectionJob::shouldKeepAlive(const HttpRequest& request) const {
@@ -710,12 +787,18 @@ bool SingleRingHttpServer::listenOnFd(int server_fd) {
     server_fd_ = server_fd;
     running_ = true;
     ktls_enabled_ = true;  // Assume KTLS if using this method
-    
+
     Logger::getInstance().logMessage("HttpServer: Listening on fd=" + std::to_string(server_fd));
-    
+
+    job_server_.setShutdownSweepFn([](Server& server) {
+        PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
+            job.requestShutdownCancel(server);
+        });
+    });
+
     // Start accepting connections
     startAccepting();
-    
+
     return true;
 }
 

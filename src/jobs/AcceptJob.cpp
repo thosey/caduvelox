@@ -42,41 +42,46 @@ void AcceptJob::freePoolAllocated(AcceptJob* job) {
 
 std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server, struct io_uring_cqe* cqe) {
     int result = cqe->res;
-    
+    bool shutting_down = server.isStopping() || server.isAborting();
+
     if (result < 0) {
-        if (on_error_) {
+        // During shutdown, listener-close and related errors are expected — suppress the callback.
+        if (!shutting_down && on_error_) {
             on_error_(-result);
         }
-        
-        // For multishot, try to resubmit on recoverable errors
-        if (-result == EMFILE || -result == ENFILE || -result == ENOBUFS) {
-            // Resource exhaustion - wait a bit and retry
+
+        // Only retry recoverable errors when the server is still running.
+        if (!shutting_down && (-result == EMFILE || -result == ENFILE || -result == ENOBUFS)) {
             resubmitAccept(server);
-            return std::nullopt; // Continue operation
+            return std::nullopt;
         }
-        
-        // Unrecoverable error - return job to pool
+
+        // Unrecoverable error, or any error during shutdown — return job to pool.
         return [](IoJob* job) {
             PoolManager::deallocate(static_cast<AcceptJob*>(job));
         };
     }
-    
-    // For multishot accept, result==0 can indicate setup completion, not a real connection
+
+    // For multishot accept, result==0 can indicate setup completion, not a real connection.
     if (result == 0) {
-        // Check if multishot is continuing - if IORING_CQE_F_MORE is NOT set,
-        // the multishot accept has terminated and we need to resubmit
+        // If IORING_CQE_F_MORE is not set the multishot has terminated.
         if (!(cqe->flags & IORING_CQE_F_MORE)) {
-            // Multishot terminated - resubmit to continue accepting
+            if (shutting_down) {
+                // Do not re-arm the accept during shutdown.
+                return [](IoJob* job) {
+                    PoolManager::deallocate(static_cast<AcceptJob*>(job));
+                };
+            }
             resubmitAccept(server);
-            return std::nullopt; // Continue with resubmitted job
+            return std::nullopt;
         }
-        return std::nullopt; // Continue multishot
+        return std::nullopt; // Continue multishot.
     }
-    
-    // Successfully accepted a connection
+
+    // Successfully accepted a connection — deliver it regardless of shutdown state;
+    // HttpConnectionJob will respect the server state at its own control boundaries.
     int client_fd = result;
-    
-    // Get client address information
+
     sockaddr_storage client_addr;
     socklen_t addr_len = sizeof(client_addr);
     if (getpeername(client_fd, (sockaddr*)&client_addr, &addr_len) == 0) {
@@ -84,21 +89,23 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
             on_connection_(client_fd, (const sockaddr*)&client_addr, addr_len);
         }
     } else {
-        // If getpeername fails, still call callback with null addr
         if (on_connection_) {
             on_connection_(client_fd, nullptr, 0);
         }
     }
-    
-    // Check if multishot is continuing - if IORING_CQE_F_MORE is NOT set,
-    // the multishot accept has terminated and we need to resubmit
+
+    // If IORING_CQE_F_MORE is not set the multishot has terminated.
     if (!(cqe->flags & IORING_CQE_F_MORE)) {
-        // Multishot terminated - resubmit to continue accepting
+        if (shutting_down) {
+            return [](IoJob* job) {
+                PoolManager::deallocate(static_cast<AcceptJob*>(job));
+            };
+        }
         resubmitAccept(server);
-        return std::nullopt; // Continue with resubmitted job
+        return std::nullopt;
     }
-    
-    return std::nullopt; // Continue multishot
+
+    return std::nullopt; // Continue multishot.
 }
 
 void AcceptJob::start(Server& server) {
@@ -122,6 +129,11 @@ void AcceptJob::submitAccept(Server& server) {
 }
 
 void AcceptJob::resubmitAccept(Server& server) {
+    // Do not re-arm during shutdown. Callers in handleCompletion are responsible
+    // for returning a cleanup callback when resubmission is skipped.
+    if (server.isStopping() || server.isAborting()) {
+        return;
+    }
     struct io_uring_sqe* sqe = server.registerJob(this);
     if (sqe) {
         prepareSqe(sqe);

@@ -15,8 +15,10 @@ public:
         io_uring_prep_nop(sqe);
     }
 
-    std::optional<CleanupCallback> handleCompletion(caduvelox::Server&, struct io_uring_cqe*) override {
-        // No-op sentinel to wake the event loop during shutdown.
+    std::optional<CleanupCallback> handleCompletion(caduvelox::Server& server, struct io_uring_cqe*) override {
+        // Trigger the ring-local shutdown sweep so idle multishot recv operations
+        // are cancelled promptly rather than waiting for a natural control boundary.
+        server.sweepLiveJobsForShutdown();
         return std::nullopt;
     }
 };
@@ -200,6 +202,16 @@ bool Server::isStopping() const {
 
 bool Server::isAborting() const {
     return getServerState() == ServerState::Aborting;
+}
+
+void Server::setShutdownSweepFn(std::function<void(Server&)> fn) {
+    shutdown_sweep_fn_ = std::move(fn);
+}
+
+void Server::sweepLiveJobsForShutdown() {
+    if (shutdown_sweep_fn_) {
+        shutdown_sweep_fn_(*this);
+    }
 }
 
 } // namespace caduvelox

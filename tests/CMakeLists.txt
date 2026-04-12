@@ -102,6 +102,8 @@ set(TEST_SOURCES
     multi_ring_ktls_shutdown_test.cpp
     http_connection_pool_leak_test.cpp
     multishot_recv_rearm_test.cpp
+    # Shutdown guard tests (Step 4 of SERVER_STATE_PLAN.md)
+    shutdown_guard_test.cpp
 )
 add_executable(caduvelox_tests ${TEST_SOURCES})
 add_dependencies(caduvelox_tests generate_test_cert_key)
@@ -180,6 +182,7 @@ add_test(NAME AcceptJobErrorCleanupTests COMMAND caduvelox_tests --gtest_filter=
 add_test(NAME MultiRingKTLSShutdownTests COMMAND caduvelox_tests --gtest_filter="MultiRingKTLSShutdownTest.*")
 add_test(NAME HttpConnectionPoolLeakTests COMMAND caduvelox_tests --gtest_filter="HttpConnectionPoolLeakTest.*")
 add_test(NAME MultishotRecvRearmTests COMMAND caduvelox_tests --gtest_filter="MultishotRecvRearmTest.*")
+add_test(NAME ShutdownGuardTests COMMAND caduvelox_tests --gtest_filter="ShutdownGuardTest.*")
 
 # Add KTLS tests separately (these might fail in CI)
 add_test(NAME KTLSTests COMMAND caduvelox_tests "--gtest_filter=KTLS*")

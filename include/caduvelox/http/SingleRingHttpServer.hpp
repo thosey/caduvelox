@@ -3,6 +3,7 @@
 #include "caduvelox/Server.hpp"
 #include "caduvelox/jobs/IoJob.hpp"
 #include "caduvelox/jobs/AcceptJob.hpp"
+#include "caduvelox/jobs/CancelJob.hpp"
 #include "caduvelox/jobs/MultishotRecvJob.hpp"
 #include "caduvelox/http/HttpConnectionRecvHandler.hpp"
 #include "caduvelox/jobs/WriteJob.hpp"
@@ -180,6 +181,9 @@ private:
     void closeConnection();
     bool shouldKeepAlive(const HttpRequest& request) const;
     void continueReading();
+    // Submit an io_uring cancel SQE targeting active_read_job_.
+    // Returns true if the cancel was successfully submitted.
+    bool submitRecvCancel();
 
     int client_fd_;
     Server& job_server_;
@@ -191,6 +195,11 @@ private:
     bool keep_alive_;  // Track if connection should remain open
     int pending_writes_;  // Track pending write operations to prevent use-after-free
     bool close_pending_;  // Track if close was requested while writes were pending
+
+    // Multishot recv cancellation support for deferred close during shutdown.
+    MultishotRecvJob<HttpConnectionRecvHandler>* active_read_job_{nullptr};  // currently armed recv job, or nullptr
+    bool read_cancel_pending_{false};  // cancel SQE already submitted for active_read_job_
+    int  deferred_close_fd_{-1};      // real fd to close once the recv terminates
 };
 
 } // namespace caduvelox

@@ -36,6 +36,16 @@ public:
     }
 
     /**
+     * Invoke callback(T&) for every live object in the thread-local pool for T.
+     * Must only be called on the ring thread that owns the pool.
+     * The callback must not allocate or deallocate T from this pool.
+     */
+    template<typename T, typename Callback>
+    static void sweepLive(Callback&& callback) {
+        getPool<T>().sweepLive(std::forward<Callback>(callback));
+    }
+
+    /**
      * Get stats for a specific pool type
      */
     template<typename T>

@@ -34,11 +34,21 @@ public:
     /**
      * Handle completion of the io_uring operation.
      * Job manages its own lifecycle - may return a cleanup callback for deferred cleanup.
-     * @param server Reference to the job server for posting follow-up jobs  
+     * @param server Reference to the job server for posting follow-up jobs
      * @param cqe The completion queue entry from io_uring
      * @return Optional cleanup function pointer to be executed after handleCompletion returns
      */
     virtual std::optional<CleanupCallback> handleCompletion(Server& server, struct io_uring_cqe* cqe) = 0;
+
+    /**
+     * Request cancellation of any long-lived in-flight operation owned by this job.
+     * Called during a ring-local shutdown sweep for jobs that may be sitting idle
+     * (e.g., an armed multishot recv on a keep-alive connection that has no pending data).
+     *
+     * The default implementation is a no-op.  Jobs that own cancelable kernel operations
+     * (currently MultishotRecvJob) override this to submit an io_uring cancel SQE.
+     */
+    virtual void requestShutdownCancel(Server&) {}
 };
 
 } // namespace caduvelox
