@@ -537,7 +537,7 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
                     return;
                 }
                 
-                if (keep_alive) {
+                if (keep_alive && !job_server_.isStopping()) {
                     startReading();
                 } else {
                     closeConnection();
@@ -608,7 +608,7 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             }
             
             // Check if we should keep the connection alive for more requests
-            if (keep_alive_) {
+            if (keep_alive_ && !job_server_.isStopping()) {
                 continueReading();
             } else {
                 closeConnection();

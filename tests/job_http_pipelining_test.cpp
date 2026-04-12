@@ -12,6 +12,7 @@
 #include <errno.h>
 
 #include "caduvelox/Server.hpp"
+#include "caduvelox/ServerState.hpp"
 #include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
 
@@ -289,4 +290,111 @@ TEST_F(JobHttpPipeliningTest, MultipleSequentialRequests) {
     }
 
     ::close(fd);
+}
+
+// Verify that a keep-alive connection is not reused once the server is Stopping.
+// The guard in the write completion callback should call closeConnection() instead
+// of continueReading() when isStopping() is true.
+//
+// We verify this at the application level: after response 1 the server must not
+// serve a second request.  We cannot reliably check for TCP-level EOF here because
+// close() on an fd with a pending io_uring multishot recv does not send FIN until
+// io_uring releases its internal file-description reference.
+TEST(HttpConnectionJobStopGuardTest, KeepAliveNotResumedWhileStopping) {
+    static caduvelox::ConsoleLogger console_logger;
+    caduvelox::Logger::setGlobalLogger(&console_logger);
+
+    // External state so we can inject Stopping without going through HttpServer::stop().
+    std::atomic<caduvelox::ServerState> shared_state{caduvelox::ServerState::Running};
+
+    caduvelox::Server job_server;
+    ASSERT_TRUE(job_server.init(128));
+
+    // Bind before run() so every isStopping() call in callbacks sees the right state.
+    job_server.bindToServerState(&shared_state);
+
+    auto http_server = std::make_unique<caduvelox::SingleRingHttpServer>(job_server);
+    http_server->addRoute("GET", "^/ping$", [](const caduvelox::HttpRequest&, caduvelox::HttpResponse& res) {
+        res.status_code = 200;
+        res.headers["content-type"] = "text/plain";
+        res.body = "pong";
+    });
+
+    const int test_port = 9590;
+    ASSERT_TRUE(http_server->listen(test_port, "127.0.0.1"));
+
+    std::thread server_thread([&job_server]() {
+        job_server.run();
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Connect a keep-alive client (HTTP/1.1 defaults to keep-alive).
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(fd, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(test_port);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    ASSERT_EQ(::connect(fd, (sockaddr*)&addr, sizeof(addr)), 0);
+
+    timeval tv{.tv_sec = 3, .tv_usec = 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // Transition to Stopping before sending the request so the write completion
+    // callback sees isStopping() == true and calls closeConnection() instead of
+    // continueReading().
+    shared_state.store(caduvelox::ServerState::Stopping, std::memory_order_release);
+
+    // --- Request 1: server must still complete the current response ---
+    std::string req = "GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    ASSERT_EQ(::send(fd, req.data(), req.size(), 0), (ssize_t)req.size());
+
+    std::string buf;
+    buf.reserve(4096);
+    char tmp[1024];
+    ParsedResponse resp1{};
+    while (true) {
+        ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
+        if (n <= 0) break;
+        buf.append(tmp, tmp + n);
+        auto parsed = tryParseHttpResponse(buf);
+        if (parsed) { resp1 = *parsed; break; }
+    }
+
+    EXPECT_EQ(resp1.status_code, 200);
+    EXPECT_EQ(resp1.body, "pong");
+
+    // --- Request 2: must NOT be served ---
+    // With the guard working: closeConnection() was called after response 1, so
+    //   client_fd_ = -1. Any write the server attempts will fail; no valid response.
+    // Without the guard: continueReading() would start a new read cycle and
+    //   response 2 would arrive with status 200.
+    ::send(fd, req.data(), req.size(), 0);  // ignore send errors — connection may be closing
+
+    timeval short_tv{.tv_sec = 1, .tv_usec = 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &short_tv, sizeof(short_tv));
+
+    std::string buf2;
+    buf2.reserve(4096);
+    bool got_second_response = false;
+    while (true) {
+        ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
+        if (n <= 0) break;  // EOF or timeout — no second response
+        buf2.append(tmp, tmp + n);
+        auto parsed = tryParseHttpResponse(buf2);
+        if (parsed && parsed->status_code == 200) {
+            got_second_response = true;
+            break;
+        }
+    }
+
+    EXPECT_FALSE(got_second_response)
+        << "Server must not serve a second request when Stopping";
+
+    ::close(fd);
+
+    http_server->stop();
+    job_server.stop();
+    server_thread.join();
 }

@@ -166,6 +166,7 @@ add_test(NAME JobHttpServerTests COMMAND caduvelox_tests --gtest_filter="JobHttp
 
 # Job-based architecture tests
 add_test(NAME JobHttpPipeliningTests COMMAND caduvelox_tests --gtest_filter="JobHttpPipeliningTest.*")
+add_test(NAME HttpConnectionJobStopGuardTests COMMAND caduvelox_tests --gtest_filter="HttpConnectionJobStopGuardTest.*")
 add_test(NAME JobKTLSPipeliningTests COMMAND caduvelox_tests --gtest_filter="JobKTLSPipeliningTest.*")
 add_test(NAME JobKTLSSendFileTests COMMAND caduvelox_tests --gtest_filter="JobKTLSSendFileTest.*")
 add_test(NAME StaticHttpsServerTests COMMAND caduvelox_tests --gtest_filter="StaticHttpsServerTest.*")
