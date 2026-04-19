@@ -1,5 +1,6 @@
 #pragma once
 
+#include "caduvelox/ServerConfig.hpp"
 #include "caduvelox/ServerState.hpp"
 #include "caduvelox/ServiceRing.hpp"
 #include "caduvelox/http/SingleRingHttpServer.hpp"
@@ -33,11 +34,15 @@ namespace caduvelox {
 class HttpServer {
 public:
     /**
-     * Create HTTPS server with optimized threading
-     * @param num_rings Number of service rings (0 = auto-detect CPU cores)
-     * @param queue_depth io_uring queue depth for each ring
+     * Create HTTPS server from a ServerConfig.
+     * All resource sizes (pool capacities, buffer ring, queue depth) are taken from cfg.
      */
-    explicit HttpServer(int num_rings = 0, unsigned queue_depth = 4096);
+    explicit HttpServer(const ServerConfig& cfg = ServerConfig{});
+
+    /**
+     * Convenience constructor — equivalent to ServerConfig{.num_rings=num_rings, .queue_depth=queue_depth}.
+     */
+    explicit HttpServer(int num_rings, unsigned queue_depth = 4096);
     ~HttpServer();
 
     // Non-copyable, non-movable
@@ -77,9 +82,14 @@ public:
     HttpRouter& getRouter() { return router_; }
 
     /**
+     * Get the active configuration.
+     */
+    const ServerConfig& getConfig() const { return config_; }
+
+    /**
      * Get number of service rings
      */
-    int getNumRings() const { return num_rings_; }
+    int getNumRings() const { return config_.num_rings; }
 
     /**
      * Get current lifecycle state
@@ -94,8 +104,7 @@ public:
 private:
     int createServerSocket(int port, const std::string& bind_addr);
 
-    int num_rings_;
-    unsigned queue_depth_;
+    ServerConfig config_;
     
     std::vector<std::unique_ptr<ServiceRing>> service_rings_;  // One per core
     std::vector<std::unique_ptr<SingleRingHttpServer>> http_servers_;    // One per service ring (internal)

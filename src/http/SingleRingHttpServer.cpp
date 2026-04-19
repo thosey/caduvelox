@@ -223,6 +223,7 @@ void SingleRingHttpServer::handleNewConnection(int client_fd, const sockaddr* ad
         auto ktls_job = PoolManager::allocate<KTLSJob>(
             client_fd,
             ssl_ctx_,
+            ktls_handshake_timeout_ms_,
             [this](int fd, SSL* ssl) {
                 handleKTLSReady(fd, ssl);
             },

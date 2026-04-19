@@ -8,11 +8,9 @@
 #include <algorithm>
 #include <errno.h>
 
-// Pool capacity specialization for SpliceFileJob
+// Default pool capacity for SpliceFileJob (overridable at runtime via ServerConfig).
 template<>
-constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::SpliceFileJob>() {
-    return 1000; // Zero-copy file transfer operations
-}
+size_t caduvelox::PoolCapacityConfig<caduvelox::SpliceFileJob>::capacity = 1000;
 
 namespace {
     void cleanupSpliceFileJob(caduvelox::IoJob* job) {

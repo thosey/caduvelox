@@ -39,6 +39,4 @@ private:
 
 // Pool capacity for CancelJob: one per active connection during shutdown sweep.
 template<>
-constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::CancelJob>() {
-    return 10000;
-}
+inline size_t caduvelox::PoolCapacityConfig<caduvelox::CancelJob>::capacity = 10000;

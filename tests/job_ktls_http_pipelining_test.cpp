@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "caduvelox/Server.hpp"
 #include "caduvelox/http/SingleRingHttpServer.hpp"
+#include "caduvelox/jobs/KTLSJob.hpp"
+#include "caduvelox/util/PoolManager.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
 #include <thread>
 #include <chrono>
@@ -12,17 +14,6 @@
 #include <string>
 #include <cstring>
 #include <algorithm>
-
-// Provide sane defaults if pool/timeout macros not passed in build.
-#ifndef CDV_KTLS_POOL_SIZE
-#define CDV_KTLS_POOL_SIZE 1000
-#endif
-#ifndef CDV_ACCEPT_POOL_SIZE
-#define CDV_ACCEPT_POOL_SIZE 100
-#endif
-#ifndef CDV_KTLS_HANDSHAKE_TIMEOUT_MS
-#define CDV_KTLS_HANDSHAKE_TIMEOUT_MS 5000
-#endif
 
 namespace {
 
@@ -218,18 +209,22 @@ TEST_F(JobKTLSPipeliningTest, TwoBackToBackRequestsOnSameConnection) {
     ASSERT_EQ(r2.body, "two");
 }
 
-// Simulate pool exhaustion of KTLSJob by compiling with very small CDV_KTLS_POOL_SIZE
+// Simulate pool exhaustion of KTLSJob by configuring a very small pool size at runtime
 // and opening more simultaneous client connections than the pool size, verifying that
 // connection attempts beyond the pool size fail initially but succeed after timeouts
 // reclaim stuck handshakes.
 TEST_F(JobKTLSPipeliningTest, KTLSPoolExhaustionRecovery) {
-    // This test depends on a reduced pool size (e.g. -DCDV_KTLS_POOL_SIZE=8) and a short handshake timeout
-    // (e.g. -DCDV_KTLS_HANDSHAKE_TIMEOUT_MS=200). If not defined, skip.
-#if !defined(CDV_KTLS_POOL_SIZE) || !defined(CDV_KTLS_HANDSHAKE_TIMEOUT_MS)
-    GTEST_SKIP() << "Compile with -DCDV_KTLS_POOL_SIZE and -DCDV_KTLS_HANDSHAKE_TIMEOUT_MS for this test";
-#endif
+    static constexpr int    POOL_SIZE   = 8;
+    static constexpr unsigned TIMEOUT_MS = 200;
 
-    const int poolSize = CDV_KTLS_POOL_SIZE; // expected max concurrent handshakes
+    // Save and override pool capacity + timeout.
+    // The new ring thread started by the next SetUp will pick up POOL_SIZE.
+    // We restore afterward so subsequent tests are unaffected.
+    const size_t saved_capacity = caduvelox::PoolManager::getCapacity<caduvelox::KTLSJob>();
+    caduvelox::PoolManager::setCapacity<caduvelox::KTLSJob>(POOL_SIZE);
+    https_server->setKtlsHandshakeTimeoutMs(TIMEOUT_MS);
+
+    const int poolSize = POOL_SIZE; // expected max concurrent handshakes
     const int extra = poolSize + 4; // exceed pool intentionally
 
     std::vector<std::unique_ptr<TLSClient>> clients;
@@ -244,7 +239,7 @@ TEST_F(JobKTLSPipeliningTest, KTLSPoolExhaustionRecovery) {
 
     // At this point some connections beyond pool size may have been closed by server.
     // Wait for at least one timeout cycle to reclaim stalled jobs.
-    std::this_thread::sleep_for(std::chrono::milliseconds(CDV_KTLS_HANDSHAKE_TIMEOUT_MS + 300));
+    std::this_thread::sleep_for(std::chrono::milliseconds(TIMEOUT_MS + 300));
 
     // Attempt an additional connection that should now succeed after reclamation.
     auto lateClient = std::make_unique<TLSClient>("127.0.0.1", test_port);
@@ -267,6 +262,9 @@ TEST_F(JobKTLSPipeliningTest, KTLSPoolExhaustionRecovery) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+
+    // Restore pool capacity so subsequent tests see the default value.
+    caduvelox::PoolManager::setCapacity<caduvelox::KTLSJob>(saved_capacity);
 }
 
 TEST_F(JobKTLSPipeliningTest, MultipleKTLSRequests) {

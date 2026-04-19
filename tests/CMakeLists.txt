@@ -104,17 +104,12 @@ set(TEST_SOURCES
     multishot_recv_rearm_test.cpp
     # Shutdown guard tests (Step 4 of SERVER_STATE_PLAN.md)
     shutdown_guard_test.cpp
+    # ServerConfig / runtime configurability tests (Workstream 1)
+    server_config_test.cpp
 )
 add_executable(caduvelox_tests ${TEST_SOURCES})
 add_dependencies(caduvelox_tests generate_test_cert_key)
 
-# Allow overriding pool sizes and handshake timeout for stress tests.
-# These can be passed from command line: -DCDV_KTLS_POOL_SIZE=16 etc.
-target_compile_definitions(caduvelox_tests PRIVATE
-    $<$<BOOL:${CDV_KTLS_POOL_SIZE}>:CDV_KTLS_POOL_SIZE=${CDV_KTLS_POOL_SIZE}>
-    $<$<BOOL:${CDV_ACCEPT_POOL_SIZE}>:CDV_ACCEPT_POOL_SIZE=${CDV_ACCEPT_POOL_SIZE}>
-    $<$<BOOL:${CDV_KTLS_HANDSHAKE_TIMEOUT_MS}>:CDV_KTLS_HANDSHAKE_TIMEOUT_MS=${CDV_KTLS_HANDSHAKE_TIMEOUT_MS}>
-)
 
 # Create test executable for HTTP server
 #add_executable(http_server_tests
@@ -140,12 +135,6 @@ target_link_libraries(caduvelox_tests
 
 # Add compiler flags
 target_compile_options(caduvelox_tests PRIVATE ${LIBURING_CFLAGS})
-# Propagate test-specific pool size/timeout overrides to library too
-target_compile_definitions(caduvelox PUBLIC
-    $<$<BOOL:${CDV_KTLS_POOL_SIZE}>:CDV_KTLS_POOL_SIZE=${CDV_KTLS_POOL_SIZE}>
-    $<$<BOOL:${CDV_ACCEPT_POOL_SIZE}>:CDV_ACCEPT_POOL_SIZE=${CDV_ACCEPT_POOL_SIZE}>
-    $<$<BOOL:${CDV_KTLS_HANDSHAKE_TIMEOUT_MS}>:CDV_KTLS_HANDSHAKE_TIMEOUT_MS=${CDV_KTLS_HANDSHAKE_TIMEOUT_MS}>
-)
 #target_compile_options(http_server_tests PRIVATE ${LIBURING_CFLAGS})
 
 # Enable testing
@@ -183,6 +172,7 @@ add_test(NAME MultiRingKTLSShutdownTests COMMAND caduvelox_tests --gtest_filter=
 add_test(NAME HttpConnectionPoolLeakTests COMMAND caduvelox_tests --gtest_filter="HttpConnectionPoolLeakTest.*")
 add_test(NAME MultishotRecvRearmTests COMMAND caduvelox_tests --gtest_filter="MultishotRecvRearmTest.*")
 add_test(NAME ShutdownGuardTests COMMAND caduvelox_tests --gtest_filter="ShutdownGuardTest.*")
+add_test(NAME ServerConfigTests COMMAND caduvelox_tests --gtest_filter="ServerConfigTest.*")
 
 # Add KTLS tests separately (these might fail in CI)
 add_test(NAME KTLSTests COMMAND caduvelox_tests "--gtest_filter=KTLS*")

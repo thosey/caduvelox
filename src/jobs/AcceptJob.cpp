@@ -5,14 +5,9 @@
 #include <liburing.h>
 #include <sys/socket.h>
 
-// Pool capacity specialization for AcceptJob
-#ifndef CDV_ACCEPT_POOL_SIZE
-#define CDV_ACCEPT_POOL_SIZE 1000
-#endif
+// Default pool capacity for AcceptJob (overridable at runtime via ServerConfig).
 template<>
-constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::AcceptJob>() {
-    return CDV_ACCEPT_POOL_SIZE; // Accept operations (1-2 per socket)
-}
+size_t caduvelox::PoolCapacityConfig<caduvelox::AcceptJob>::capacity = 1000;
 
 namespace caduvelox {
 

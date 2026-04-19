@@ -64,7 +64,8 @@ public:
     bool isKTLSEnabled() const { return ktls_enabled_; }
 
     // Public constructor for pool allocation
-    KTLSJob(int client_fd, SSL_CTX* ssl_ctx, SuccessCallback on_success, ErrorCallback on_error);
+    KTLSJob(int client_fd, SSL_CTX* ssl_ctx, unsigned timeout_ms,
+            SuccessCallback on_success, ErrorCallback on_error);
 
 private:
 
@@ -89,6 +90,7 @@ private:
     ErrorCallback on_error_;
 
     // Handshake state tracking
+    unsigned timeout_ms_;   // Per-step handshake timeout (ms)
     bool ssl_initialized_;
     int last_ssl_error_;
     

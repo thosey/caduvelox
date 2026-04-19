@@ -6,6 +6,24 @@
 namespace caduvelox {
 
 /**
+ * Per-type pool capacity configuration.
+ *
+ * The primary template provides a default of 1000.
+ * Type-specific defaults are defined as explicit specializations near each type
+ * (see KTLSJob.cpp, AcceptJob.cpp, WriteJob.cpp, etc.).
+ * HttpServer overrides these at runtime via PoolManager::setCapacity<T>() before
+ * starting ring threads.
+ */
+template<typename T>
+struct PoolCapacityConfig {
+    static size_t capacity;
+};
+
+// Primary template default — explicit specializations override this.
+template<typename T>
+inline size_t PoolCapacityConfig<T>::capacity = 1000;
+
+/**
  * PoolManager - Provides thread-local object pools for per-ring architecture
  * 
  * This manager provides access to thread-local pools for various job types.
@@ -58,25 +76,38 @@ public:
         return getPool<T>().allocated();
     }
 
+    /**
+     * Get the current capacity for pool type T.
+     * Useful for tests that need to save and restore capacity values.
+     */
+    template<typename T>
+    static size_t getCapacity() {
+        return PoolCapacityConfig<T>::capacity;
+    }
+
+    /**
+     * Override the pool capacity for type T.
+     * Must be called before the first allocation on any ring thread that should
+     * use the new value — thread-local pools are sized on first access.
+     * Typical caller: HttpServer constructor, before starting ring threads.
+     */
+    template<typename T>
+    static void setCapacity(size_t cap) {
+        PoolCapacityConfig<T>::capacity = cap;
+    }
+
 private:
     template<typename T>
     static ThreadLocalPool<T>& getPool() {
-        // Thread-local pool per type
-        // Capacity tuned based on expected usage
-        constexpr size_t capacity = getPoolCapacity<T>();
-        thread_local ThreadLocalPool<T> pool(capacity);
+        // Thread-local pool per type.
+        // Capacity is read once per thread on first access — set PoolCapacityConfig<T>::capacity
+        // before starting ring threads so they pick up the right value.
+        thread_local ThreadLocalPool<T> pool(PoolCapacityConfig<T>::capacity);
         return pool;
-    }
-
-    // Pool capacity specializations based on usage patterns
-    // Default capacity - can be specialized near type definitions
-    template<typename T>
-    static constexpr size_t getPoolCapacity() {
-        return 1000; // Default capacity for unknown types
     }
 };
 
-// Specializations should be defined near the type definitions
-// See: SingleRingHttpServer.hpp, WriteJob.cpp, KTLSJob.cpp, etc.
+// Specializations are defined near the type definitions.
+// See: SingleRingHttpServer.hpp, CancelJob.hpp, WriteJob.cpp, KTLSJob.cpp, etc.
 
 } // namespace caduvelox

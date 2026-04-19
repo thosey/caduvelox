@@ -87,6 +87,12 @@ public:
     void setKTLSContext(SSL_CTX* ssl_ctx, bool take_ownership = true);
 
     /**
+     * Override the per-step TLS handshake timeout (default 5000 ms).
+     * Must be called before listenKTLS() / listenOnFd().
+     */
+    void setKtlsHandshakeTimeoutMs(unsigned ms) { ktls_handshake_timeout_ms_ = ms; }
+
+    /**
      * Start listening on an existing socket fd (for multi-ring with SO_REUSEPORT)
      * @param server_fd Pre-created listening socket
      * @return true on success
@@ -101,6 +107,7 @@ private:
     bool ktls_enabled_;
     SSL_CTX* ssl_ctx_;  // For KTLS support
     bool owns_ssl_ctx_;  // Whether this instance should free ssl_ctx_
+    unsigned ktls_handshake_timeout_ms_{5000};  // Per-step handshake timeout
 
     /**
      * Start accepting connections
@@ -204,20 +211,16 @@ private:
 
 } // namespace caduvelox
 
-// Pool capacity specializations for HTTP jobs
+// Pool capacity configurations for HTTP jobs
 template<>
-constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::HttpConnectionJob>() {
-    return 10000; // High concurrency - many simultaneous connections
-}
+inline size_t caduvelox::PoolCapacityConfig<caduvelox::HttpConnectionJob>::capacity = 10000;
 
 // Type alias for templated MultishotRecvJob (avoids comma issues in macro)
 using HttpMultishotRecvJob = caduvelox::MultishotRecvJob<caduvelox::HttpConnectionRecvHandler>;
 
-// Template specialization for MultishotRecvJob with HttpConnectionRecvHandler
+// Pool capacity for MultishotRecvJob with HttpConnectionRecvHandler
 template<>
-constexpr size_t caduvelox::PoolManager::getPoolCapacity<HttpMultishotRecvJob>() {
-    return 10000; // One per active HTTP connection
-}
+inline size_t caduvelox::PoolCapacityConfig<HttpMultishotRecvJob>::capacity = 10000;
 
 // Thread-local pools are managed by PoolManager
 // Each ring thread gets its own independent pools with zero synchronization

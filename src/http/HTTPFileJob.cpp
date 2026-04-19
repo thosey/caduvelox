@@ -10,11 +10,9 @@
 #include <sstream>
 #include <cstring>
 
-// Pool capacity specialization for HTTPFileJob
+// Default pool capacity for HTTPFileJob (overridable at runtime via ServerConfig).
 template<>
-constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::HTTPFileJob>() {
-    return 1000; // File serving operations
-}
+size_t caduvelox::PoolCapacityConfig<caduvelox::HTTPFileJob>::capacity = 1000;
 
 namespace caduvelox {
 

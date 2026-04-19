@@ -121,9 +121,9 @@ TEST_F(ShutdownGuardTest, KTLSJobFailsFastDuringStopping) {
 
     bool error_called = false;
     int error_code = 0;
-    // ssl_ctx=nullptr is intentional: the shutdown check fires before SSL initialisation.
+    // ssl_ctx=nullptr, timeout_ms=5000: shutdown check fires before SSL initialisation.
     auto* job = PoolManager::allocate<KTLSJob>(
-        -1, nullptr,
+        -1, nullptr, 5000,
         [](int, SSL*) {},
         [&](int, int code) { error_called = true; error_code = code; });
     ASSERT_NE(job, nullptr);
@@ -152,7 +152,7 @@ TEST_F(ShutdownGuardTest, KTLSJobFailsFastDuringAborting) {
 
     bool error_called = false;
     auto* job = PoolManager::allocate<KTLSJob>(
-        -1, nullptr,
+        -1, nullptr, 5000,
         [](int, SSL*) {},
         [&](int, int) { error_called = true; });
     ASSERT_NE(job, nullptr);

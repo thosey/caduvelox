@@ -8,9 +8,10 @@
 
 namespace caduvelox {
 
-ServiceRing::ServiceRing(int ring_id, int cpu_id, unsigned queue_depth)
+ServiceRing::ServiceRing(int ring_id, int cpu_id, unsigned queue_depth,
+                         unsigned buf_count, size_t buf_size)
     : ring_id_(ring_id), cpu_id_(cpu_id), queue_depth_(queue_depth),
-      server_(), running_(false) {
+      buf_count_(buf_count), buf_size_(buf_size), server_(), running_(false) {
 }
 
 ServiceRing::~ServiceRing() {
@@ -23,7 +24,7 @@ ServiceRing::~ServiceRing() {
 bool ServiceRing::init() {
     // Initialize the underlying io_uring server
     try {
-        if (!server_.init(queue_depth_)) {
+        if (!server_.init(queue_depth_, buf_count_, buf_size_)) {
             Logger::getInstance().logError("ServiceRing[" + std::to_string(ring_id_) + 
                                           "]: Failed to initialize io_uring");
             return false;

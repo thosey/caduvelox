@@ -25,11 +25,14 @@ class ServiceRing {
 public:
     /**
      * Create a service ring for a specific CPU core
-     * @param ring_id Unique identifier for this ring (0 to num_cores-1)
-     * @param cpu_id CPU core to pin this thread to (-1 for no pinning)
+     * @param ring_id     Unique identifier for this ring (0 to num_cores-1)
+     * @param cpu_id      CPU core to pin this thread to (-1 for no pinning)
      * @param queue_depth io_uring queue depth
+     * @param buf_count   Number of zero-copy recv buffers
+     * @param buf_size    Size of each recv buffer in bytes
      */
-    ServiceRing(int ring_id, int cpu_id, unsigned queue_depth = 4096);
+    ServiceRing(int ring_id, int cpu_id, unsigned queue_depth = 4096,
+                unsigned buf_count = 512, size_t buf_size = 16384);
     ~ServiceRing();
 
     // Non-copyable, non-movable
@@ -89,6 +92,8 @@ private:
     int ring_id_;           // Unique ID for this ring (0 to N-1)
     int cpu_id_;            // CPU core to pin to (-1 for no pinning)
     unsigned queue_depth_;  // io_uring queue depth
+    unsigned buf_count_;    // Zero-copy recv buffer count
+    size_t buf_size_;       // Size of each recv buffer in bytes
     
     Server server_;         // Underlying io_uring server
     std::thread thread_;    // Dedicated thread for this ring

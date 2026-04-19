@@ -41,14 +41,14 @@ Server::~Server() {
     }
 }
 
-bool Server::init(unsigned queue_depth) {
+bool Server::init(unsigned queue_depth, unsigned buf_count, size_t buf_size) {
     int ret = io_uring_queue_init(queue_depth, &ring_, 0);
     if (ret < 0) {
         throw std::runtime_error("Failed to initialize io_uring: " + std::string(strerror(-ret)));
     }
 
-    // Set up buffer ring for zero-copy operations
-    // Use the direct io_uring overload to avoid reinterpret_cast issues
+    // Create and set up the buffer ring with the requested dimensions.
+    buffer_ring_coordinator_ = std::make_shared<BufferRingCoordinator>(buf_count, buf_size);
     if (!buffer_ring_coordinator_->setupBufferRing(&ring_)) {
         throw std::runtime_error("Failed to setup buffer ring - this requires a recent kernel with buffer ring support");
     }

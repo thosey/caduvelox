@@ -1,6 +1,12 @@
 #include "caduvelox/http/HttpServer.hpp"
 #include "caduvelox/jobs/KTLSContextHelper.hpp"
+#include "caduvelox/jobs/KTLSJob.hpp"
+#include "caduvelox/jobs/AcceptJob.hpp"
+#include "caduvelox/jobs/WriteJob.hpp"
+#include "caduvelox/http/HTTPFileJob.hpp"
+#include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/logger/Logger.hpp"
+#include "caduvelox/util/PoolManager.hpp"
 #include <thread>
 #include <stdexcept>
 #include <sys/socket.h>
@@ -11,14 +17,48 @@
 
 namespace caduvelox {
 
-HttpServer::HttpServer(int num_rings, unsigned queue_depth)
-    : num_rings_(num_rings > 0 ? num_rings : std::thread::hardware_concurrency()),
-      queue_depth_(queue_depth),
+HttpServer::HttpServer(const ServerConfig& cfg)
+    : config_(cfg),
       ssl_ctx_(nullptr),
       state_(ServerState::Stopped) {
-    
-    Logger::getInstance().logMessage("HttpServer: Creating server with " + 
-                                    std::to_string(num_rings_) + " service rings");
+
+    // Resolve num_rings=0 (auto-detect) before anything else.
+    if (config_.num_rings <= 0) {
+        config_.num_rings = static_cast<int>(std::thread::hardware_concurrency());
+    }
+
+    // Apply pool capacities from config before any ring threads are started.
+    // Thread-local pools are initialised on first access, so these writes are
+    // visible to every ring thread created during listenKTLS().
+    PoolManager::setCapacity<KTLSJob>(config_.ktls_pool_size);
+    PoolManager::setCapacity<AcceptJob>(config_.accept_pool_size);
+    PoolManager::setCapacity<WriteJob>(config_.write_pool_size);
+    PoolManager::setCapacity<HTTPFileJob>(config_.file_job_pool_size);
+    PoolManager::setCapacity<HttpConnectionJob>(config_.connection_pool_size);
+    PoolManager::setCapacity<HttpMultishotRecvJob>(config_.connection_pool_size);
+
+    // Log startup resource footprint.
+    const size_t buf_mb = (static_cast<size_t>(config_.buffer_ring_count) *
+                           config_.buffer_size_bytes) / (1024 * 1024);
+    Logger::getInstance().logMessage("HttpServer: Creating server with " +
+                                     std::to_string(config_.num_rings) + " service rings");
+    Logger::getInstance().logMessage("HttpServer: Buffer ring: " +
+                                     std::to_string(config_.buffer_ring_count) + " x " +
+                                     std::to_string(config_.buffer_size_bytes) + " B = " +
+                                     std::to_string(buf_mb) + " MB per ring");
+    Logger::getInstance().logMessage("HttpServer: kTLS pool: " +
+                                     std::to_string(config_.ktls_pool_size) + " slots");
+    Logger::getInstance().logMessage("HttpServer: Connection pool: " +
+                                     std::to_string(config_.connection_pool_size) + " slots");
+}
+
+HttpServer::HttpServer(int num_rings, unsigned queue_depth)
+    : HttpServer([&]{
+        ServerConfig cfg;
+        cfg.num_rings    = num_rings;
+        cfg.queue_depth  = queue_depth;
+        return cfg;
+    }()) {
 }
 
 HttpServer::~HttpServer() {
@@ -50,13 +90,15 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
     }
 
     // Create service rings - each will have its own listening socket
-    service_rings_.reserve(num_rings_);
-    http_servers_.reserve(num_rings_);
-    
-    for (int i = 0; i < num_rings_; ++i) {
-        // Create service ring with CPU affinity
-        int cpu_id = i % std::thread::hardware_concurrency();
-        auto ring = std::make_unique<ServiceRing>(i, cpu_id, queue_depth_);
+    service_rings_.reserve(config_.num_rings);
+    http_servers_.reserve(config_.num_rings);
+
+    for (int i = 0; i < config_.num_rings; ++i) {
+        // Create service ring with CPU affinity and runtime buffer config
+        int cpu_id = i % static_cast<int>(std::thread::hardware_concurrency());
+        auto ring = std::make_unique<ServiceRing>(i, cpu_id, config_.queue_depth,
+                                                  config_.buffer_ring_count,
+                                                  config_.buffer_size_bytes);
         
         if (!ring->init()) {
             Logger::getInstance().logError("HttpServer: Failed to initialize service ring " + 
@@ -81,6 +123,9 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
         
         // Set KTLS context (borrowed reference - parent HttpServer owns it)
         http_server->setKTLSContext(ssl_ctx_, false);
+
+        // Apply per-ring runtime config
+        http_server->setKtlsHandshakeTimeoutMs(config_.ktls_handshake_timeout_ms);
         
         // Start listening on this ring's socket
         // We manually set the socket since we created it with SO_REUSEPORT
@@ -104,7 +149,7 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
 
     state_.store(ServerState::Running, std::memory_order_release);
     
-    Logger::getInstance().logMessage("HttpServer: All " + std::to_string(num_rings_) + 
+    Logger::getInstance().logMessage("HttpServer: All " + std::to_string(config_.num_rings) + 
                                     " rings listening on " + bind_addr + ":" + std::to_string(port));
     
     return true;

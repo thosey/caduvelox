@@ -7,14 +7,9 @@
 #include <errno.h>
 #include <cstring>
 
-// Pool capacity specialization for KTLSJob
-#ifndef CDV_KTLS_POOL_SIZE
-#define CDV_KTLS_POOL_SIZE 5000
-#endif
+// Default pool capacity for KTLSJob (overridable at runtime via ServerConfig).
 template<>
-constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::KTLSJob>() {
-    return CDV_KTLS_POOL_SIZE; // HTTPS handshake operations
-}
+size_t caduvelox::PoolCapacityConfig<caduvelox::KTLSJob>::capacity = 5000;
 
 namespace {
     void cleanupKTLSJob(caduvelox::IoJob* job) {
@@ -24,7 +19,8 @@ namespace {
 
 namespace caduvelox {
 
-KTLSJob::KTLSJob(int client_fd, SSL_CTX* ssl_ctx, SuccessCallback on_success, ErrorCallback on_error)
+KTLSJob::KTLSJob(int client_fd, SSL_CTX* ssl_ctx, unsigned timeout_ms,
+                 SuccessCallback on_success, ErrorCallback on_error)
     : client_fd_(client_fd)
     , ssl_ctx_(ssl_ctx)
     , ssl_(nullptr)
@@ -33,6 +29,7 @@ KTLSJob::KTLSJob(int client_fd, SSL_CTX* ssl_ctx, SuccessCallback on_success, Er
     , logger_(Logger::getInstance())
     , on_success_(std::move(on_success))
     , on_error_(std::move(on_error))
+    , timeout_ms_(timeout_ms)
     , ssl_initialized_(false)
     , last_ssl_error_(0)
     , pending_operations_(0)
@@ -195,11 +192,7 @@ void KTLSJob::submitPollOperation(Server& server, short events) {
     // handshake, the link timeout will fire and we'll error out, returning
     // this job to the pool.
 
-    // Default 5000ms; overridable via -DCDV_KTLS_HANDSHAKE_TIMEOUT_MS
-#ifndef CDV_KTLS_HANDSHAKE_TIMEOUT_MS
-#define CDV_KTLS_HANDSHAKE_TIMEOUT_MS 5000
-#endif
-    constexpr unsigned HANDSHAKE_TIMEOUT_MS = CDV_KTLS_HANDSHAKE_TIMEOUT_MS; // per step
+    const unsigned HANDSHAKE_TIMEOUT_MS = timeout_ms_; // per step, set from ServerConfig
 
     struct io_uring_sqe* sqe = server.registerJob(this);
     if (!sqe) {

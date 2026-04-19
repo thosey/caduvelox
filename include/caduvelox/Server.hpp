@@ -51,8 +51,11 @@ public:
 
     /**
      * Initialize the server with io_uring parameters
+     * @param queue_depth   SQE/CQE ring depth
+     * @param buf_count     Number of pre-allocated zero-copy recv buffers
+     * @param buf_size      Size of each recv buffer in bytes
      */
-    bool init(unsigned queue_depth = 256);
+    bool init(unsigned queue_depth = 256, unsigned buf_count = 512, size_t buf_size = 16384);
 
     /**
      * Start the event loop (blocking)

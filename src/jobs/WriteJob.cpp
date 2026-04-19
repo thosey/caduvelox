@@ -7,11 +7,9 @@
 #include <cerrno>
 #include <string>
 
-// Pool capacity specialization for WriteJob (extremely hot path)
+// Default pool capacity for WriteJob (overridable at runtime via ServerConfig).
 template<>
-constexpr size_t caduvelox::PoolManager::getPoolCapacity<caduvelox::WriteJob>() {
-    return 10000; // Large pool - many concurrent write operations
-}
+size_t caduvelox::PoolCapacityConfig<caduvelox::WriteJob>::capacity = 10000;
 
 namespace {
     void cleanupWriteJob(caduvelox::IoJob* job) {
