@@ -29,7 +29,8 @@ SpliceFileJob::SpliceFileJob(int client_fd, int file_fd, uint64_t offset, uint64
     , total_transferred_(0)
     , bytes_in_pipe_(0)
     , pending_operations_(0)
-    , current_chunk_size_(0) {
+    , current_chunk_size_(0)
+    , error_pending_(false) {
     
     pipe_fds_[0] = -1;
     pipe_fds_[1] = -1;
@@ -106,14 +107,23 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
                 return std::nullopt; // Continue operation
             }
             
-            Logger::getInstance().logError("SpliceFileJob: linked splice operation failed fd=" + 
+            Logger::getInstance().logError("SpliceFileJob: linked splice operation failed fd=" +
                                          std::to_string(client_fd_) + ", error=" + std::to_string(-result));
             if (on_error_) {
                 on_error_(client_fd_, -result);
             }
             return cleanupSpliceFileJob;
         }
-        
+
+        // sqe2 allocation failed in startLinkedSplice; sqe1 just completed.
+        // The overall transfer failed — call the error callback and clean up.
+        if (error_pending_ && pending_operations_ == 0) {
+            if (on_error_) {
+                on_error_(client_fd_, ENOMEM);
+            }
+            return cleanupSpliceFileJob;
+        }
+
         if (state_ == SplicingFileToPipe) {
             // This is the file→pipe completion
             Logger::getInstance().logMessage("SpliceFileJob: File->Pipe linked splice: " + std::to_string(result) + " bytes");
@@ -243,12 +253,15 @@ void SpliceFileJob::startLinkedSplice(Server& server) {
                         0);  // no special flags
     sqe1->flags |= IOSQE_IO_LINK;  // Link to next operation
     
-    // Get SQE for pipe→socket splice (stage 2) 
+    // Get SQE for pipe→socket splice (stage 2)
     struct io_uring_sqe* sqe2 = server.registerJob(this);
     if (!sqe2) {
-        if (on_error_) {
-            on_error_(client_fd_, -ENOMEM);
-        }
+        // sqe1 is already written into the SQE ring and cannot be removed.
+        // Submit it now so we receive its completion, then handle the error
+        // there once all in-flight operations have landed.
+        error_pending_ = true;
+        pending_operations_ = 1;
+        server.submit();
         return;
     }
     

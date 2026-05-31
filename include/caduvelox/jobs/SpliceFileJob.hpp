@@ -79,6 +79,7 @@ private:
     size_t bytes_in_pipe_;  // Track how much data is currently in the pipe
     int pending_operations_;  // Track linked operations
     size_t current_chunk_size_;  // Size of current chunk being transferred
+    bool error_pending_;  // sqe2 alloc failed in startLinkedSplice; waiting for sqe1 completion
     
     CompletionCallback on_complete_;
     ErrorCallback on_error_;
