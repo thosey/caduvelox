@@ -31,6 +31,8 @@ bool BufferRingCoordinator::setupBufferRing(struct io_uring* ring) {
         return true;
     }
 
+    ring_ = ring;
+
     // Allocate memory for all buffers in a single mmap block
     size_t total_size = buf_count_ * buf_size_;
     buffer_block_ = ::mmap(nullptr, total_size, PROT_READ | PROT_WRITE, 
@@ -74,15 +76,19 @@ bool BufferRingCoordinator::setupBufferRing(struct io_uring* ring) {
 }
 
 void BufferRingCoordinator::cleanupBufferRing() {
+    if (buffer_ring_ && ring_) {
+        io_uring_free_buf_ring(ring_, buffer_ring_, buf_count_, buf_group_id_);
+        buffer_ring_ = nullptr;
+    }
+
     if (buffer_block_) {
         size_t total_size = buf_count_ * buf_size_;
         ::munmap(buffer_block_, total_size);
         buffer_block_ = nullptr;
     }
-    
-    // Note: buffer_ring_ is managed by liburing, don't free it manually
-    buffer_ring_ = nullptr;
+
     buf_count_ = 0;
+    ring_ = nullptr;
 }
 
 bool BufferRingCoordinator::hasBufferRing() const {

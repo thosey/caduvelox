@@ -49,6 +49,7 @@ private:
     unsigned buf_group_id_;
     
     // Buffer ring state
+    struct io_uring* ring_{nullptr};          // owning io_uring; needed for io_uring_free_buf_ring
     struct io_uring_buf_ring* buffer_ring_{nullptr};
     void* buffer_block_{nullptr};
     unsigned buffer_ring_mask_{0};
