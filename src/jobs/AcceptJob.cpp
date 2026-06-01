@@ -1,4 +1,5 @@
 #include "caduvelox/jobs/AcceptJob.hpp"
+#include "caduvelox/jobs/CancelJob.hpp"
 #include "caduvelox/Server.hpp"
 #include "caduvelox/logger/Logger.hpp"
 #include "caduvelox/util/PoolManager.hpp"
@@ -20,19 +21,14 @@ AcceptJob::AcceptJob(int server_fd)
 AcceptJob* AcceptJob::create(int server_fd,
                             ConnectionCallback on_connection,
                             ErrorCallback on_error) {
-    AcceptJob* job = PoolManager::allocate<AcceptJob>(server_fd);
-    if (job) {
-        job->on_connection_ = std::move(on_connection);
-        job->on_error_ = std::move(on_error);
-    }
+    auto* job = new AcceptJob(server_fd);
+    job->on_connection_ = std::move(on_connection);
+    job->on_error_ = std::move(on_error);
     return job;
 }
 
-// Free pool-allocated job (for error cleanup)
 void AcceptJob::freePoolAllocated(AcceptJob* job) {
-    if (job) {
-        PoolManager::deallocate<AcceptJob>(job);
-    }
+    delete job;
 }
 
 std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server, struct io_uring_cqe* cqe) {
@@ -53,7 +49,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
 
         // Unrecoverable error, or any error during shutdown — return job to pool.
         return [](IoJob* job) {
-            PoolManager::deallocate(static_cast<AcceptJob*>(job));
+            delete static_cast<AcceptJob*>(job);
         };
     }
 
@@ -120,6 +116,18 @@ void AcceptJob::submitAccept(Server& server) {
     } else if (on_error_) {
         // Ring SQE temporarily unavailable
         on_error_(EAGAIN);
+    }
+}
+
+void AcceptJob::requestShutdownCancel(Server& server) {
+    auto* cancel_job = PoolManager::allocate<CancelJob>(reinterpret_cast<uint64_t>(this));
+    if (!cancel_job) return;
+    struct io_uring_sqe* sqe = server.registerJob(cancel_job);
+    if (sqe) {
+        cancel_job->prepareSqe(sqe);
+        server.submit();
+    } else {
+        PoolManager::deallocate(cancel_job);
     }
 }
 

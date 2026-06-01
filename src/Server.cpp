@@ -8,24 +8,6 @@
 #include <iostream>
 #include <stdexcept>
 
-namespace {
-class StopIoJob final : public caduvelox::IoJob {
-public:
-    void prepareSqe(struct io_uring_sqe* sqe) override {
-        io_uring_prep_nop(sqe);
-    }
-
-    std::optional<CleanupCallback> handleCompletion(caduvelox::Server& server, struct io_uring_cqe*) override {
-        // Trigger the ring-local shutdown sweep so idle multishot recv operations
-        // are cancelled promptly rather than waiting for a natural control boundary.
-        server.sweepLiveJobsForShutdown();
-        return std::nullopt;
-    }
-};
-
-StopIoJob g_stop_job;
-}
-
 namespace caduvelox {
 
 Server::Server() 
@@ -60,6 +42,10 @@ bool Server::init(unsigned queue_depth, unsigned buf_count, size_t buf_size) {
 void Server::run() {
     running_.store(true, std::memory_order_relaxed);
 
+    if (startup_fn_) {
+        startup_fn_(*this);
+    }
+
     while (running_.load(std::memory_order_relaxed)) {
         processCompletions();
     }
@@ -88,8 +74,8 @@ void Server::stop() {
     }
 
     if (sqe) {
-        g_stop_job.prepareSqe(sqe);
-        io_uring_sqe_set_data64(sqe, reinterpret_cast<uintptr_t>(&g_stop_job));
+        io_uring_prep_nop(sqe);
+        io_uring_sqe_set_data64(sqe, 0);  // user_data=0 signals the shutdown sweep
         io_uring_submit(&ring_);
     } else {
         Logger::getInstance().logError("Server: Unable to acquire SQE for shutdown wakeup");
@@ -99,13 +85,12 @@ void Server::stop() {
 }
 
 struct io_uring_sqe* Server::registerJob(IoJob* job) {
-    // Get an SQE from io_uring
     struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
     if (!sqe) {
-        return nullptr; // Ring is full
+        return nullptr;
     }
-    
-    io_uring_sqe_set_data64(sqe,  reinterpret_cast<uintptr_t>(job));
+    ++in_flight_;
+    io_uring_sqe_set_data64(sqe, reinterpret_cast<uintptr_t>(job));
     return sqe;
 }
 
@@ -118,25 +103,20 @@ int Server::getBufferGroupId() const {
 }
 
 void Server::drainCompletions() {
-    struct io_uring_cqe* cqe;
-    int max_iterations = 100; // Prevent infinite loops
-    int iterations = 0;
-    
-    Logger::getInstance().logMessage("Server: Starting drain (pool-based jobs manage own lifecycle)");
-    
-    // Process remaining completions without waiting
-    while (iterations < max_iterations) {
-        int ret = io_uring_peek_cqe(&ring_, &cqe);
+    Logger::getInstance().logMessage("Server: Starting drain, in_flight=" + std::to_string(in_flight_));
+
+    while (in_flight_ > 0) {
+        struct io_uring_cqe* cqe;
+        int ret = io_uring_wait_cqe(&ring_, &cqe);
         if (ret < 0) {
-            break; // No more completions available
+            if (ret == -EINTR) continue;
+            Logger::getInstance().logError("Server: drain wait failed: " + std::string(strerror(-ret)));
+            break;
         }
-        
-        // Process all available completions
         processAvailableCompletions();
-        iterations++;
     }
-    
-    Logger::getInstance().logMessage("Server: Drain complete after " + std::to_string(iterations) + " iterations");
+
+    Logger::getInstance().logMessage("Server: Drain complete");
 }
 
 void Server::processCompletions() {
@@ -171,14 +151,21 @@ void Server::processAvailableCompletions() {
 void Server::handleCompletion(struct io_uring_cqe* cqe) {
     uint64_t user_data = io_uring_cqe_get_data64(cqe);
     if (user_data == 0) {
-        Logger::getInstance().logError("Server: Completion with null user_data");
+        // Shutdown NOP — trigger the ring-local sweep and return.
+        // Not counted in in_flight_ since it bypasses registerJob.
+        sweepLiveJobsForShutdown();
         return;
     }
 
-    IoJob* job = (IoJob*)user_data;
+    IoJob* job = reinterpret_cast<IoJob*>(user_data);
     auto cleanup = job->handleCompletion(*this, cqe);
-    
-    // Execute cleanup function pointer if returned
+
+    // Decrement only when the operation is fully done (no further CQEs expected).
+    // Multishot operations set IORING_CQE_F_MORE on all but their final completion.
+    if (!(cqe->flags & IORING_CQE_F_MORE)) {
+        --in_flight_;
+    }
+
     if (cleanup) {
         (*cleanup)(job);
     }
@@ -202,6 +189,10 @@ bool Server::isStopping() const {
 
 bool Server::isAborting() const {
     return getServerState() == ServerState::Aborting;
+}
+
+void Server::setStartupFn(std::function<void(Server&)> fn) {
+    startup_fn_ = std::move(fn);
 }
 
 void Server::setShutdownSweepFn(std::function<void(Server&)> fn) {

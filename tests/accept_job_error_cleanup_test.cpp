@@ -112,7 +112,7 @@ TEST_F(AcceptJobErrorCleanupTest, CleanupCallbackExecutesCorrectly) {
     // Note: We allocate on this thread, but in production the deallocation
     // would happen on the io_uring thread
     
-    auto* job = PoolManager::allocate<AcceptJob>(-1);
+    auto* job = AcceptJob::create(-1, nullptr, nullptr);
     ASSERT_NE(job, nullptr);
     
     // Simulate an error

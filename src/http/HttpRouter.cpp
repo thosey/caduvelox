@@ -83,7 +83,7 @@ void HttpRouter::addRouteWithCaptures(const std::string& method, const std::stri
     routes_.push_back(Route{method, std::regex(pathRegex), nullptr, std::move(handler), true});
 }
 
-void HttpRouter::dispatch(const HttpRequest& req, HttpResponse& res) {
+void HttpRouter::dispatch(const HttpRequest& req, HttpResponse& res) const {
     for (const auto& route : routes_) {
         if (route.method != "ALL" && route.method != req.method) continue;
         
@@ -114,7 +114,7 @@ void HttpRouter::dispatch(const HttpRequest& req, HttpResponse& res) {
     handle_not_found(res);
 }
 
-void HttpRouter::fallback_to_default_headers(HttpResponse& res) {
+void HttpRouter::fallback_to_default_headers(HttpResponse& res) const {
     if (res.getHeader("content-length").empty()) {
         res.setHeader("content-length", std::to_string(res.body.size()));
     }
@@ -126,7 +126,7 @@ void HttpRouter::fallback_to_default_headers(HttpResponse& res) {
     }
 }
 
-void HttpRouter::handle_not_found(HttpResponse& res) {
+void HttpRouter::handle_not_found(HttpResponse& res) const {
     res.setStatus(404, "Not Found");
     res.setBody("Not Found");
     res.setHeader("content-type", "text/plain");

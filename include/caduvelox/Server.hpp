@@ -114,6 +114,14 @@ public:
     bool isAborting() const;
 
     /**
+     * Register a function called once at the start of run(), on the ring thread,
+     * before the event loop begins. Used by SingleRingHttpServer to allocate and
+     * submit the AcceptJob from the correct thread-local pool.
+     * Must be installed before run() is called.
+     */
+    void setStartupFn(std::function<void(Server&)> fn);
+
+    /**
      * Register a function that sweeps ring-local job pools during shutdown.
      * Called by SingleRingHttpServer so it can cancel idle multishot recv jobs
      * without Server needing to know about specific job types.
@@ -136,6 +144,7 @@ private:
     // Core io_uring state (stack allocated like original Server)
     struct io_uring ring_;
     std::atomic<bool> running_;
+    int in_flight_ = 0;  // count of registered operations not yet fully completed
 
     // Owned local state used when no external atomic has been installed.
     std::atomic<ServerState> local_state_{ServerState::Running};
@@ -143,6 +152,9 @@ private:
     // Points to the active state atomic — either local_state_ (default) or an
     // external atomic shared across multiple Server instances.
     std::atomic<ServerState>* server_state_;
+
+    // Optional ring-local startup action installed by SingleRingHttpServer.
+    std::function<void(Server&)> startup_fn_;
 
     // Optional ring-local shutdown sweep installed by SingleRingHttpServer.
     std::function<void(Server&)> shutdown_sweep_fn_;

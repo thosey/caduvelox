@@ -43,13 +43,13 @@ class HttpRouter {
     void addRouteWithCaptures(const std::string& method, const std::string& pathRegex, HttpHandlerWithCaptures handler);
 
     // Route a request and generate response
-    void dispatch(const HttpRequest& req, HttpResponse& res);
+    void dispatch(const HttpRequest& req, HttpResponse& res) const;
 
   private:
     std::vector<Route> routes_;
     
-    void fallback_to_default_headers(HttpResponse& res);
-    void handle_not_found(HttpResponse& res);
+    void fallback_to_default_headers(HttpResponse& res) const;
+    void handle_not_found(HttpResponse& res) const;
 };
 
 } // namespace caduvelox

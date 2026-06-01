@@ -104,6 +104,7 @@ private:
     HttpRouter router_;
     int server_fd_;
     bool running_;
+    AcceptJob* accept_job_ = nullptr;
     bool ktls_enabled_;
     SSL_CTX* ssl_ctx_;  // For KTLS support
     bool owns_ssl_ctx_;  // Whether this instance should free ssl_ctx_
@@ -171,7 +172,7 @@ public:
     std::optional<CleanupCallback> handleCompletion(Server& server, struct io_uring_cqe* cqe) override;
 
     // Constructor needs to be public for pool allocation
-    HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router, 
+    HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router,
                      SingleRingHttpServer* http_server, size_t max_request_size);
 
     // Public for stateless callback handlers (called by MultishotRecvJob)
@@ -194,7 +195,7 @@ private:
 
     int client_fd_;
     Server& job_server_;
-    HttpRouter router_;
+    const HttpRouter& router_;
     SingleRingHttpServer* http_server_;  // Currently unused, kept for API compatibility
     std::string request_buffer_;
     size_t max_request_size_;

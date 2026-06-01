@@ -36,6 +36,7 @@ public:
     // IoJob interface
     void prepareSqe(struct io_uring_sqe* sqe) override;
     std::optional<CleanupCallback> handleCompletion(Server& server, struct io_uring_cqe* cqe) override;
+    void requestShutdownCancel(Server& server) override;
 
     // Start the job (submit initial operation)
     void start(Server& server);
