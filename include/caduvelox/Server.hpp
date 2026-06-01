@@ -135,7 +135,7 @@ private:
 
     // Core io_uring state (stack allocated like original Server)
     struct io_uring ring_;
-    bool running_;
+    std::atomic<bool> running_;
 
     // Owned local state used when no external atomic has been installed.
     std::atomic<ServerState> local_state_{ServerState::Running};

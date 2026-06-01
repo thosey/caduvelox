@@ -58,9 +58,9 @@ bool Server::init(unsigned queue_depth, unsigned buf_count, size_t buf_size) {
 }
 
 void Server::run() {
-    running_ = true;
+    running_.store(true, std::memory_order_relaxed);
 
-    while (running_) {
+    while (running_.load(std::memory_order_relaxed)) {
         processCompletions();
     }
 
@@ -71,7 +71,7 @@ void Server::run() {
 }
 
 void Server::stop() {
-    running_ = false;
+    running_.store(false, std::memory_order_relaxed);
     
     // Early return if ring was never initialized (init() failed or never called)
     if (ring_.ring_fd <= 0) {
