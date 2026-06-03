@@ -60,8 +60,19 @@ HttpParser::ParseResult HttpParser::parse_request(std::string_view buf, HttpRequ
 }
 
 bool HttpParser::parse_request_line(std::string_view line, HttpRequest& out) {
-    std::istringstream ls{std::string(line)};
-    return static_cast<bool>(ls >> out.method >> out.path >> out.version);
+    size_t sp1 = line.find(' ');
+    if (sp1 == std::string_view::npos || sp1 == 0) return false;
+
+    size_t sp2 = line.find(' ', sp1 + 1);
+    if (sp2 == std::string_view::npos || sp2 == sp1 + 1) return false;
+
+    std::string_view version = line.substr(sp2 + 1);
+    if (version.empty()) return false;
+
+    out.method.assign(line.data(), sp1);
+    out.path.assign(line.data() + sp1 + 1, sp2 - sp1 - 1);
+    out.version.assign(version.data(), version.size());
+    return true;
 }
 
 bool HttpParser::parse_headers(std::string_view headers_section, HttpRequest& out) {
@@ -108,19 +119,10 @@ bool HttpParser::parse_headers(std::string_view headers_section, HttpRequest& ou
 }
 
 std::string HttpParser::trim_header_value(std::string_view value) {
-    std::string result(value);
-    
-    // Trim leading space
-    while (!result.empty() && (result[0] == ' ' || result[0] == '\t')) {
-        result.erase(result.begin());
-    }
-    
-    // Trim trailing space
-    while (!result.empty() && (result.back() == ' ' || result.back() == '\t')) {
-        result.pop_back();
-    }
-    
-    return result;
+    size_t start = value.find_first_not_of(" \t");
+    if (start == std::string_view::npos) return {};
+    size_t end = value.find_last_not_of(" \t");
+    return std::string(value.substr(start, end - start + 1));
 }
 
 std::string HttpParser::normalize_header_name(std::string_view name) {

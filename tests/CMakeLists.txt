@@ -80,6 +80,8 @@ set(TEST_SOURCES
     util/ring_buffer/notifying_ring_buffer_test.cpp
     # Router Unit Tests (architecture-agnostic)
     http_router_unit_test.cpp
+    # Parser Unit Tests
+    http_parser_unit_test.cpp
     # Logger Tests (file logging and rotation)
     logger_test.cpp
     # HttpServer lifecycle state tests
@@ -149,7 +151,7 @@ set_tests_properties(CaduveloxTests PROPERTIES TIMEOUT 600)
 add_test(NAME RingBufferTests COMMAND caduvelox_tests --gtest_filter="*RingBufferTest.*")
 add_test(NAME HttpServerTests COMMAND caduvelox_tests --gtest_filter="HttpServerTest.*")
 add_test(NAME ServerStatePtrTests COMMAND caduvelox_tests --gtest_filter="ServerStatePtrTest.*")
-add_test(NAME HttpParserTests COMMAND caduvelox_tests --gtest_filter="HttpParser*Test.*")
+add_test(NAME HttpParserTests COMMAND caduvelox_tests --gtest_filter="HttpParserUnitTest.*")
 add_test(NAME HttpRouterTests COMMAND caduvelox_tests --gtest_filter="HttpRouterUnitTest.*")
 add_test(NAME WriteMappingTests COMMAND caduvelox_tests --gtest_filter="WriteMappingRegression.*")
 add_test(NAME HttpPipeliningTests COMMAND caduvelox_tests --gtest_filter="HttpPipeliningTest.*")
