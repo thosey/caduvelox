@@ -418,7 +418,8 @@ void HttpConnectionJob::startReading() {
     // Template policy pattern - type-safe, fully inlineable callbacks
     auto* read_job = PoolManager::allocate<MultishotRecvJob<HttpConnectionRecvHandler>>(
         client_fd_,
-        handler               // Handler instance (no void* casting!)
+        handler,
+        *job_server_.getBufferRingCoordinator()
     );
 
     if (!read_job) {

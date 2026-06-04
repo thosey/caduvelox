@@ -5,8 +5,8 @@
 #include "caduvelox/Server.hpp"
 #include "caduvelox/util/ProvidedBufferToken.hpp"
 #include "caduvelox/util/PoolManager.hpp"
+#include "caduvelox/ring_buffer/BufferRingCoordinator.hpp"
 #include <liburing.h>
-#include <memory>
 #include <errno.h>
 #include <concepts>
 
@@ -79,11 +79,12 @@ public:
     void requestShutdownCancel(Server& server) override;
 
     // Constructor must be public for pool allocation
-    MultishotRecvJob(int fd, Handler handler);
+    MultishotRecvJob(int fd, Handler handler, BufferRingCoordinator& coordinator);
 
 private:
     int fd_;
-    Handler handler_;              // Handler encapsulates context + callbacks
+    Handler handler_;
+    BufferRingCoordinator& coordinator_;
 };
 
 // ============================================================================
@@ -91,9 +92,10 @@ private:
 // ============================================================================
 
 template<ResponseHandler Handler>
-MultishotRecvJob<Handler>::MultishotRecvJob(int fd, Handler handler)
+MultishotRecvJob<Handler>::MultishotRecvJob(int fd, Handler handler, BufferRingCoordinator& coordinator)
     : fd_(fd)
     , handler_(std::move(handler))
+    , coordinator_(coordinator)
 {
 }
 
@@ -139,34 +141,16 @@ std::optional<IoJob::CleanupCallback> MultishotRecvJob<Handler>::handleCompletio
     
     // Successful read
     unsigned int buffer_id = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
-    
-    // Get buffer coordinator and buffer pointer
-    auto buffer_coordinator = server.getBufferRingCoordinator();
-    if (!buffer_coordinator) {
-        handler_.onError(-EINVAL);
-        return [](IoJob* job) {
-            PoolManager::deallocate(static_cast<MultishotRecvJob<Handler>*>(job));
-        };
-    }
-    
-    void* buffer_ptr = buffer_coordinator->getBufferPtr(buffer_id);
+
+    void* buffer_ptr = coordinator_.getBufferPtr(buffer_id);
     if (!buffer_ptr) {
         handler_.onError(-EINVAL);
         return [](IoJob* job) {
             PoolManager::deallocate(static_cast<MultishotRecvJob<Handler>*>(job));
         };
     }
-    
-    // Zero-copy path: create token for inline processing
-    // Token lifecycle managed by scope - RAII cleanup when function returns
-    ProvidedBufferToken token(
-        [buffer_coordinator](unsigned buf_id) {
-            buffer_coordinator->recycleBuffer(buf_id);
-        },
-        buffer_id,
-        static_cast<char*>(buffer_ptr),
-        result
-    );
+
+    ProvidedBufferToken token(&coordinator_, buffer_id, static_cast<char*>(buffer_ptr), result);
     
     // Call token handler (direct call, fully inlineable!)
     handler_.onDataToken(token);
