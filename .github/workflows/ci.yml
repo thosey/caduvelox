@@ -121,7 +121,8 @@ jobs:
         run: |
           cd build-asan/tests
           # Run the test binary directly under ASAN/UBSAN. Exclude kernel-dependent tests using gtest negative filter.
-          ./caduvelox_tests --gtest_filter="-JobKTLS*:StaticHttps*"
+          # timeout 300: fail fast instead of burning the 6-hour GitHub job limit if a test hangs.
+          timeout 300 ./caduvelox_tests --gtest_filter="-JobKTLS*:StaticHttps*"
 
       - name: Upload ASAN logs (if any failures produce sanitizer logs)
         if: failure()

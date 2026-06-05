@@ -144,7 +144,7 @@ private:
     // Core io_uring state (stack allocated like original Server)
     struct io_uring ring_;
     std::atomic<bool> running_;
-    int in_flight_ = 0;  // count of registered operations not yet fully completed
+    std::atomic<int> in_flight_{0};  // count of registered operations not yet fully completed
 
     // Owned local state used when no external atomic has been installed.
     std::atomic<ServerState> local_state_{ServerState::Running};
