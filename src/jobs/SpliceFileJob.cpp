@@ -6,7 +6,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <algorithm>
-#include <errno.h>
+#include <cerrno>
+#include <cstring>
 
 // Default pool capacity for SpliceFileJob (overridable at runtime via ServerConfig).
 template<>
@@ -203,16 +204,14 @@ void SpliceFileJob::start(Server& server) {
 }
 
 void SpliceFileJob::createPipe() {
-    if (pipe(pipe_fds_) < 0) {
-        Logger::getInstance().logError("SpliceFileJob: pipe() failed");
+    if (pipe2(pipe_fds_, O_NONBLOCK | O_CLOEXEC) < 0) {
+        Logger::getInstance().logError("SpliceFileJob: pipe2() failed: " +
+                                       std::string(strerror(errno)));
+        pipe_fds_[0] = pipe_fds_[1] = -1;
         return;
     }
-    
-    // Set pipes to non-blocking mode for better io_uring integration
-    fcntl(pipe_fds_[0], F_SETFL, O_NONBLOCK);
-    fcntl(pipe_fds_[1], F_SETFL, O_NONBLOCK);
-    
-    Logger::getInstance().logMessage("SpliceFileJob: Created pipe [" + 
+
+    Logger::getInstance().logMessage("SpliceFileJob: Created pipe [" +
                                    std::to_string(pipe_fds_[0]) + ", " + std::to_string(pipe_fds_[1]) + "]");
 }
 
