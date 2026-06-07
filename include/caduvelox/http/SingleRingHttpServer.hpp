@@ -173,7 +173,7 @@ public:
 
     // Constructor needs to be public for pool allocation
     HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router,
-                     SingleRingHttpServer* http_server, size_t max_request_size);
+                     size_t max_request_size);
 
     // Public for stateless callback handlers (called by MultishotRecvJob)
     void handleDataReceived(const char* data, ssize_t len);
@@ -196,7 +196,6 @@ private:
     int client_fd_;
     Server& job_server_;
     const HttpRouter& router_;
-    SingleRingHttpServer* http_server_;  // Currently unused, kept for API compatibility
     std::string request_buffer_;
     size_t max_request_size_;
     bool reading_active_;

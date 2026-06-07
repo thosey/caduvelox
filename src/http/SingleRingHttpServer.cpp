@@ -268,7 +268,7 @@ void SingleRingHttpServer::handleNewConnection(int client_fd, const sockaddr* ad
 }
 
 void SingleRingHttpServer::createConnectionHandler(int client_fd) {
-    auto connection_job = PoolManager::allocate<HttpConnectionJob>(client_fd, job_server_, router_, this, 1024 * 1024);
+    auto connection_job = PoolManager::allocate<HttpConnectionJob>(client_fd, job_server_, router_, 1024 * 1024);
     
     if (!connection_job) {
         Logger::getInstance().logError("HttpServer: Failed to allocate HttpConnectionJob from pool");
@@ -368,11 +368,10 @@ int SingleRingHttpServer::createServerSocket(int port, const std::string& bind_a
 // Pool-allocated only - managed via cleanup callbacks (no shared_ptr needed)
 
 HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router,
-                                   SingleRingHttpServer* http_server, size_t max_request_size)
+                                   size_t max_request_size)
     : client_fd_(client_fd)
     , job_server_(job_server)
     , router_(router)
-    , http_server_(http_server)
     , request_buffer_()
     , max_request_size_(max_request_size)
     , reading_active_(false)
