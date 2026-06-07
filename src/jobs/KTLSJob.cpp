@@ -309,8 +309,6 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
                 return std::nullopt;
             }
 
-        logger_.logError("KTLSJob: Poll operation failed for fd=" + std::to_string(client_fd_) + 
-                        ", error: " + std::string(strerror(-cqe->res)));
             logger_.logError("KTLSJob: Poll/timeout failure for fd=" + std::to_string(client_fd_) +
                              ", error: " + std::string(strerror(-cqe->res)) +
                              (cqe->res == -ETIME ? " (handshake step timed out)" : ""));
