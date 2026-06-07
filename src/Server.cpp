@@ -10,15 +10,16 @@
 
 namespace caduvelox {
 
-Server::Server() 
+Server::Server()
     : ring_{}, running_(false),
       server_state_(&local_state_),
       buffer_ring_coordinator_(std::make_shared<BufferRingCoordinator>()) {
+    ring_.ring_fd = -1;  // sentinel: ring not yet initialized; distinguishes uninit from fd 0 (stdin)
 }
 
 Server::~Server() {
     stop();
-    if (ring_.ring_fd != 0) {
+    if (ring_.ring_fd >= 0) {
         io_uring_queue_exit(&ring_);
     }
 }
@@ -60,7 +61,7 @@ void Server::stop() {
     running_.store(false, std::memory_order_relaxed);
     
     // Early return if ring was never initialized (init() failed or never called)
-    if (ring_.ring_fd <= 0) {
+    if (ring_.ring_fd < 0) {
         Logger::getInstance().logMessage("Server: Stop requested (ring not initialized)");
         return;
     }
