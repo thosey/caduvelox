@@ -243,8 +243,14 @@ int HttpServer::createServerSocket(int port, const std::string& bind_addr) {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    if (inet_pton(AF_INET, bind_addr.c_str(), &addr.sin_addr) <= 0) {
-        Logger::getInstance().logError("HttpServer: Invalid bind address: " + bind_addr);
+    int inet_result = inet_pton(AF_INET, bind_addr.c_str(), &addr.sin_addr);
+    if (inet_result == 0) {
+        Logger::getInstance().logError("HttpServer: Invalid IPv4 address format: " + bind_addr);
+        close(server_fd);
+        return -1;
+    } else if (inet_result < 0) {
+        Logger::getInstance().logError("HttpServer: inet_pton failed for address " + bind_addr +
+                                       ": " + std::string(strerror(errno)));
         close(server_fd);
         return -1;
     }

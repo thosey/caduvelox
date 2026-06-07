@@ -311,17 +311,21 @@ int SingleRingHttpServer::createServerSocket(int port, const std::string& bind_a
         return -1;
     }
 
-    // Create server socket
-    int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int socket_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (socket_fd < 0) {
         Logger::getInstance().logError("HttpServer: Failed to create socket: " + std::string(strerror(errno)));
         return -1;
     }
 
-    // Set socket options
     int opt = 1;
     if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         Logger::getInstance().logError("HttpServer: Failed to set SO_REUSEADDR: " + std::string(strerror(errno)));
+        close(socket_fd);
+        return -1;
+    }
+
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        Logger::getInstance().logError("HttpServer: Failed to set SO_REUSEPORT: " + std::string(strerror(errno)));
         close(socket_fd);
         return -1;
     }
@@ -351,8 +355,7 @@ int SingleRingHttpServer::createServerSocket(int port, const std::string& bind_a
         return -1;
     }
 
-    // Start listening
-    if (::listen(socket_fd, 128) < 0) {
+    if (::listen(socket_fd, SOMAXCONN) < 0) {
         Logger::getInstance().logError("HttpServer: Failed to listen on socket: " + std::string(strerror(errno)));
         close(socket_fd);
         return -1;
