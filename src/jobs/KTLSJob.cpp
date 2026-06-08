@@ -1,7 +1,6 @@
 #include "caduvelox/jobs/KTLSJob.hpp"
 #include "caduvelox/Server.hpp"
 #include "caduvelox/util/PoolManager.hpp"
-#include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
 #include <errno.h>
@@ -34,11 +33,6 @@ KTLSJob::KTLSJob(int client_fd, SSL_CTX* ssl_ctx, unsigned timeout_ms,
     , last_ssl_error_(0)
     , pending_operations_(0)
 {
-    // Set socket to non-blocking for handshake
-    int flags = fcntl(client_fd_, F_GETFL, 0);
-    if (flags != -1) {
-        fcntl(client_fd_, F_SETFL, flags | O_NONBLOCK);
-    }
 }
 
 KTLSJob::~KTLSJob() {
