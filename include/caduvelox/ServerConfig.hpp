@@ -32,6 +32,7 @@ struct ServerConfig {
 
     // Timeouts
     unsigned ktls_handshake_timeout_ms = 5000;   // Per-step TLS handshake timeout (ms)
+    unsigned idle_timeout_ms           = 60000;  // Keep-alive idle timeout (ms); 0 = disabled
 
     // Threading
     int num_rings = 0;  // 0 = auto-detect via hardware_concurrency()

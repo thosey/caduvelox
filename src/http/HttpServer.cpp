@@ -3,6 +3,7 @@
 #include "caduvelox/jobs/KTLSJob.hpp"
 #include "caduvelox/jobs/AcceptJob.hpp"
 #include "caduvelox/jobs/WriteJob.hpp"
+#include "caduvelox/jobs/IdleTimeoutJob.hpp"
 #include "caduvelox/http/HTTPFileJob.hpp"
 #include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/logger/Logger.hpp"
@@ -36,6 +37,7 @@ HttpServer::HttpServer(const ServerConfig& cfg)
     PoolManager::setCapacity<HTTPFileJob>(config_.file_job_pool_size);
     PoolManager::setCapacity<HttpConnectionJob>(config_.connection_pool_size);
     PoolManager::setCapacity<HttpMultishotRecvJob>(config_.connection_pool_size);
+    PoolManager::setCapacity<IdleTimeoutJob>(config_.connection_pool_size);
 
     // Log startup resource footprint.
     const size_t buf_mb = (static_cast<size_t>(config_.buffer_ring_count) *
@@ -126,6 +128,7 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
 
         // Apply per-ring runtime config
         http_server->setKtlsHandshakeTimeoutMs(config_.ktls_handshake_timeout_ms);
+        http_server->setIdleTimeoutMs(config_.idle_timeout_ms);
         
         // Start listening on this ring's socket
         // We manually set the socket since we created it with SO_REUSEPORT

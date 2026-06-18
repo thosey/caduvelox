@@ -19,6 +19,8 @@
 
 namespace caduvelox {
 
+class IdleTimeoutJob;
+
 /**
  * Pure job-based HTTP server - no IConsumer abstraction needed!
  * 
@@ -93,6 +95,14 @@ public:
     void setKtlsHandshakeTimeoutMs(unsigned ms) { ktls_handshake_timeout_ms_ = ms; }
 
     /**
+     * Override the keep-alive idle timeout (default 60000 ms). A connection that
+     * sits idle waiting for the next request for longer than this is closed.
+     * Pass 0 to disable the idle timeout entirely.
+     * Must be called before listen() / listenKTLS() / listenOnFd().
+     */
+    void setIdleTimeoutMs(unsigned ms) { idle_timeout_ms_ = ms; }
+
+    /**
      * Start listening on an existing socket fd (for multi-ring with SO_REUSEPORT)
      * @param server_fd Pre-created listening socket
      * @return true on success
@@ -109,6 +119,7 @@ private:
     SSL_CTX* ssl_ctx_;  // For KTLS support
     bool owns_ssl_ctx_;  // Whether this instance should free ssl_ctx_
     unsigned ktls_handshake_timeout_ms_{5000};  // Per-step handshake timeout
+    unsigned idle_timeout_ms_{60000};  // Keep-alive idle timeout (0 = disabled)
 
     /**
      * Start accepting connections
@@ -173,12 +184,17 @@ public:
 
     // Constructor needs to be public for pool allocation
     HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router,
-                     size_t max_request_size);
+                     size_t max_request_size, unsigned idle_timeout_ms);
 
     // Public for stateless callback handlers (called by MultishotRecvJob)
     void handleDataReceived(const char* data, ssize_t len);
     void handleReadError(int error);
     int getClientFd() const { return client_fd_; }
+
+    // Public for IdleTimeoutJob's completion callback. `job` identifies which
+    // timer instance is completing, so a stale completion from a timer that
+    // has already been superseded by a fresher one can be safely ignored.
+    void handleIdleTimeout(IdleTimeoutJob* job, int res);
 
 private:
 
@@ -192,12 +208,18 @@ private:
     // Submit an io_uring cancel SQE targeting active_read_job_.
     // Returns true if the cancel was successfully submitted.
     bool submitRecvCancel();
+    // Arm a fresh idle-wait timeout. No-op if idle_timeout_ms_ == 0.
+    void armIdleTimeout();
+    // Submit an io_uring cancel SQE targeting active_idle_timeout_job_.
+    // Returns true if the cancel was successfully submitted.
+    bool submitIdleTimeoutCancel();
 
     int client_fd_;
     Server& job_server_;
     const HttpRouter& router_;
     std::string request_buffer_;
     size_t max_request_size_;
+    unsigned idle_timeout_ms_;
     bool reading_active_;
     bool keep_alive_;  // Track if connection should remain open
     int pending_writes_;  // Track pending write operations to prevent use-after-free
@@ -207,6 +229,10 @@ private:
     MultishotRecvJob<HttpConnectionRecvHandler>* active_read_job_{nullptr};  // currently armed recv job, or nullptr
     bool read_cancel_pending_{false};  // cancel SQE already submitted for active_read_job_
     int  deferred_close_fd_{-1};      // real fd to close once the recv terminates
+
+    // Idle-wait timeout: closes connections that sit idle between keep-alive requests.
+    IdleTimeoutJob* active_idle_timeout_job_{nullptr};  // currently armed timer, or nullptr
+    bool idle_cancel_pending_{false};  // cancel SQE already submitted for active_idle_timeout_job_
 };
 
 } // namespace caduvelox

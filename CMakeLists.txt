@@ -45,6 +45,7 @@ add_library(caduvelox
     src/jobs/SpliceFileJob.cpp
     src/jobs/KTLSJob.cpp
     src/jobs/KTLSContextHelper.cpp
+    src/jobs/IdleTimeoutJob.cpp
     # HTTP layer (server, routing, file serving)
     src/http/HttpParser.cpp
     src/http/HttpRouter.cpp

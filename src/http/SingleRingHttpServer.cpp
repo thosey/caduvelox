@@ -3,6 +3,7 @@
 #include "caduvelox/jobs/KTLSJob.hpp"
 #include "caduvelox/jobs/KTLSContextHelper.hpp"
 #include "caduvelox/jobs/MultishotRecvJob.hpp"
+#include "caduvelox/jobs/IdleTimeoutJob.hpp"
 #include "caduvelox/http/HttpConnectionRecvHandler.hpp"
 #include "caduvelox/ring_buffer/BufferRingCoordinator.hpp"
 #include "caduvelox/util/ProvidedBufferToken.hpp"
@@ -86,6 +87,9 @@ bool SingleRingHttpServer::listen(int port, const std::string& bind_addr) {
         PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
             job.requestShutdownCancel(server);
         });
+        PoolManager::sweepLive<IdleTimeoutJob>([&](IdleTimeoutJob& job) {
+            job.requestShutdownCancel(server);
+        });
         if (accept_job_) {
             accept_job_->requestShutdownCancel(server);
             accept_job_ = nullptr;
@@ -133,6 +137,9 @@ bool SingleRingHttpServer::listenKTLS(int port, const std::string& cert_path, co
 
     job_server_.setShutdownSweepFn([this](Server& server) {
         PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
+            job.requestShutdownCancel(server);
+        });
+        PoolManager::sweepLive<IdleTimeoutJob>([&](IdleTimeoutJob& job) {
             job.requestShutdownCancel(server);
         });
         if (accept_job_) {
@@ -268,7 +275,7 @@ void SingleRingHttpServer::handleNewConnection(int client_fd, const sockaddr* ad
 }
 
 void SingleRingHttpServer::createConnectionHandler(int client_fd) {
-    auto connection_job = PoolManager::allocate<HttpConnectionJob>(client_fd, job_server_, router_, 1024 * 1024);
+    auto connection_job = PoolManager::allocate<HttpConnectionJob>(client_fd, job_server_, router_, 1024 * 1024, idle_timeout_ms_);
     
     if (!connection_job) {
         Logger::getInstance().logError("HttpServer: Failed to allocate HttpConnectionJob from pool");
@@ -368,12 +375,13 @@ int SingleRingHttpServer::createServerSocket(int port, const std::string& bind_a
 // Pool-allocated only - managed via cleanup callbacks (no shared_ptr needed)
 
 HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router,
-                                   size_t max_request_size)
+                                   size_t max_request_size, unsigned idle_timeout_ms)
     : client_fd_(client_fd)
     , job_server_(job_server)
     , router_(router)
     , request_buffer_()
     , max_request_size_(max_request_size)
+    , idle_timeout_ms_(idle_timeout_ms)
     , reading_active_(false)
     , keep_alive_(true)  // Default to keep-alive for HTTP/1.1
     , pending_writes_(0)
@@ -381,6 +389,8 @@ HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const Ht
     , active_read_job_(nullptr)
     , read_cancel_pending_(false)
     , deferred_close_fd_(-1)
+    , active_idle_timeout_job_(nullptr)
+    , idle_cancel_pending_(false)
 {
     
     request_buffer_.reserve(8192);
@@ -445,6 +455,10 @@ void HttpConnectionJob::startReading() {
 
         // Submit the job
         job_server_.submit();
+
+        // Arm the idle-wait timeout: closes the connection if no data arrives
+        // before the next request within idle_timeout_ms_.
+        armIdleTimeout();
     } else {
         Logger::getInstance().logError("HttpConnectionJob: Failed to register ReadJob");
         // CRITICAL: Free the pool-allocated job to prevent leak
@@ -479,6 +493,13 @@ void HttpConnectionJob::handleDataReceived(const char* data, ssize_t len) {
         Logger::getInstance().logError("HttpConnectionJob: Request too large, closing connection");
         closeConnection();
         return;
+    }
+
+    // Real data arrived — the idle wait that armIdleTimeout() started is over.
+    if (active_idle_timeout_job_ != nullptr && !idle_cancel_pending_) {
+        if (submitIdleTimeoutCancel()) {
+            idle_cancel_pending_ = true;
+        }
     }
 
     // Append data to request buffer
@@ -589,7 +610,7 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
                 }
                 
                 if (keep_alive && !job_server_.isStopping()) {
-                    startReading();
+                    continueReading();
                 } else {
                     closeConnection();
                 }
@@ -706,23 +727,53 @@ void HttpConnectionJob::closeConnection() {
         return;
     }
 
+    close_pending_ = true;
+    bool waiting = false;
+
+    // Cancel the idle-wait timer if one is armed. Submitted independently of the
+    // recv cancel below — both legs may be outstanding at once.
+    if (active_idle_timeout_job_ != nullptr) {
+        if (!idle_cancel_pending_) {
+            if (submitIdleTimeoutCancel()) {
+                idle_cancel_pending_ = true;
+            } else {
+                // Cancel submission failed (pool or SQE exhausted) — fall through;
+                // the timer will fire naturally later and no-op against a closed fd.
+                Logger::getInstance().logError("HttpConnectionJob: Failed to submit idle-timeout cancel");
+                active_idle_timeout_job_ = nullptr;
+            }
+        }
+        if (active_idle_timeout_job_ != nullptr) {
+            waiting = true;
+        }
+    }
+
     // If a multishot recv is still active and no cancel has been submitted yet,
     // cancel it and defer the actual fd close until the cancel completes.
     // Set client_fd_ = -1 immediately so any buffered recv completions arriving
     // before the cancel fires are discarded by handleDataReceived().
-    if (active_read_job_ != nullptr && !read_cancel_pending_) {
-        deferred_close_fd_ = client_fd_;
-        client_fd_ = -1;
-        if (submitRecvCancel()) {
-            read_cancel_pending_ = true;
-            close_pending_ = true;
-            Logger::getInstance().logMessage("HttpConnectionJob: Recv cancel submitted, deferring close fd=" +
-                                             std::to_string(deferred_close_fd_));
-            return;
+    if (active_read_job_ != nullptr) {
+        if (!read_cancel_pending_) {
+            deferred_close_fd_ = client_fd_;
+            client_fd_ = -1;
+            if (submitRecvCancel()) {
+                read_cancel_pending_ = true;
+            } else {
+                // Cancel submission failed (pool or SQE exhausted) — fall through and
+                // close the fd immediately; the recv will terminate naturally with EBADF.
+                Logger::getInstance().logError("HttpConnectionJob: Failed to submit recv cancel, closing fd immediately");
+                active_read_job_ = nullptr;
+            }
         }
-        // Cancel submission failed (pool or SQE exhausted) — fall through and
-        // close the fd immediately; the recv will terminate naturally with EBADF.
-        Logger::getInstance().logError("HttpConnectionJob: Failed to submit recv cancel, closing fd immediately");
+        if (active_read_job_ != nullptr) {
+            waiting = true;
+        }
+    }
+
+    if (waiting) {
+        Logger::getInstance().logMessage("HttpConnectionJob: Close deferred pending cancel completion(s) fd=" +
+                                         std::to_string(deferred_close_fd_ >= 0 ? deferred_close_fd_ : client_fd_));
+        return;
     }
 
     // Perform the actual close.
@@ -737,6 +788,7 @@ void HttpConnectionJob::closeConnection() {
     reading_active_ = false;
     close_pending_ = false;
     read_cancel_pending_ = false;
+    idle_cancel_pending_ = false;
     active_read_job_ = nullptr;
 
     // Submit a NOP with this job as user_data so Server::handleCompletion fires
@@ -768,6 +820,77 @@ bool HttpConnectionJob::submitRecvCancel() {
     return false;
 }
 
+void HttpConnectionJob::armIdleTimeout() {
+    if (idle_timeout_ms_ == 0 || client_fd_ < 0) {
+        return;
+    }
+
+    auto* timeout_job = PoolManager::allocate<IdleTimeoutJob>(this, idle_timeout_ms_);
+    if (!timeout_job) {
+        Logger::getInstance().logError("HttpConnectionJob: Failed to allocate IdleTimeoutJob from pool");
+        return; // Non-fatal: this wait cycle simply has no idle timeout.
+    }
+
+    struct io_uring_sqe* sqe = job_server_.registerJob(timeout_job);
+    if (!sqe) {
+        Logger::getInstance().logError("HttpConnectionJob: Failed to register IdleTimeoutJob");
+        PoolManager::deallocate(timeout_job);
+        return;
+    }
+
+    timeout_job->prepareSqe(sqe);
+    active_idle_timeout_job_ = timeout_job;
+    idle_cancel_pending_ = false;
+    job_server_.submit();
+}
+
+bool HttpConnectionJob::submitIdleTimeoutCancel() {
+    auto* cancel_job = PoolManager::allocate<CancelJob>(
+        reinterpret_cast<uint64_t>(active_idle_timeout_job_));
+    if (!cancel_job) {
+        return false;
+    }
+    struct io_uring_sqe* sqe = job_server_.registerJob(cancel_job);
+    if (sqe) {
+        cancel_job->prepareSqe(sqe);
+        job_server_.submit();
+        return true;
+    }
+    PoolManager::deallocate(cancel_job);
+    return false;
+}
+
+void HttpConnectionJob::handleIdleTimeout(IdleTimeoutJob* job, int res) {
+    if (job != active_idle_timeout_job_) {
+        // Stale completion from a timer that was already superseded by a
+        // fresher one (its cancel was submitted, but this completion arrived
+        // after a new timer was armed). The current timer is still live and
+        // responsible for the connection's fate — ignore this one.
+        return;
+    }
+    active_idle_timeout_job_ = nullptr;
+
+    if (res == -ECANCELED) {
+        // Either activity resumed (data arrived) or the connection is closing for
+        // another reason. If we're mid-close, re-enter to check whether the other
+        // leg (recv cancel) has also drained.
+        if (close_pending_) {
+            closeConnection();
+        }
+        return;
+    }
+
+    if (client_fd_ < 0 && deferred_close_fd_ < 0) {
+        // Stale completion after the connection already fully closed.
+        return;
+    }
+
+    Logger::getInstance().logMessage("HttpConnectionJob: Idle timeout fd=" +
+                                     std::to_string(client_fd_ >= 0 ? client_fd_ : deferred_close_fd_) +
+                                     ", res=" + std::to_string(res));
+    closeConnection();
+}
+
 bool HttpConnectionJob::shouldKeepAlive(const HttpRequest& request) const {
     // Check Connection header - HTTP/1.1 defaults to keep-alive
     auto conn_header = request.headers.find("connection");
@@ -788,11 +911,16 @@ bool HttpConnectionJob::shouldKeepAlive(const HttpRequest& request) const {
 }
 
 void HttpConnectionJob::continueReading() {
-    // Resume reading for next request on persistent connection
-    Logger::getInstance().logMessage("HttpConnectionJob: Continuing reading for keep-alive connection fd=" + 
+    // The multishot recv armed by start()/startReading() persists automatically
+    // across requests — it keeps delivering completions until cancelled or it
+    // hits an error/EOF, so there's nothing to re-arm here. (Re-arming would
+    // orphan the original recv job: it would keep holding a kernel reference
+    // on client_fd_ that nothing tracks or cancels, deferring the real socket
+    // teardown indefinitely once the connection eventually closes.)
+    // Just start a fresh idle-wait window for the next request.
+    Logger::getInstance().logMessage("HttpConnectionJob: Continuing reading for keep-alive connection fd=" +
                                    std::to_string(client_fd_));
-    reading_active_ = false;
-    startReading();
+    armIdleTimeout();
 }
 
 // ============================================================================
@@ -817,6 +945,9 @@ bool SingleRingHttpServer::listenOnFd(int server_fd) {
 
     job_server_.setShutdownSweepFn([this](Server& server) {
         PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
+            job.requestShutdownCancel(server);
+        });
+        PoolManager::sweepLive<IdleTimeoutJob>([&](IdleTimeoutJob& job) {
             job.requestShutdownCancel(server);
         });
         if (accept_job_) {

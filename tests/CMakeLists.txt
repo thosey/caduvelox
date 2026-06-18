@@ -108,6 +108,8 @@ set(TEST_SOURCES
     shutdown_guard_test.cpp
     # ServerConfig / runtime configurability tests (Workstream 1)
     server_config_test.cpp
+    # Keep-alive idle timeout tests (review item #17)
+    idle_timeout_test.cpp
 )
 add_executable(caduvelox_tests ${TEST_SOURCES})
 add_dependencies(caduvelox_tests generate_test_cert_key)
