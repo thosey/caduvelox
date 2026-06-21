@@ -212,17 +212,16 @@ void SingleRingHttpServer::handleNewConnection(int client_fd, const sockaddr* ad
     std::string access_log = "[ACCESS] CONNECT fd=" + std::to_string(client_fd);
     
     if (addr) {
-        char ip_str[INET6_ADDRSTRLEN];
+        // Only AF_INET is reachable here: every listening socket in this codebase
+        // is created with socket(AF_INET, ...), so getpeername() on an accepted
+        // connection can never return AF_INET6.
+        char ip_str[INET_ADDRSTRLEN];
         int port = 0;
-        
+
         if (addr->sa_family == AF_INET) {
             auto* addr4 = (const sockaddr_in*)addr;
             inet_ntop(AF_INET, &addr4->sin_addr, ip_str, sizeof(ip_str));
             port = ntohs(addr4->sin_port);
-        } else if (addr->sa_family == AF_INET6) {
-            auto* addr6 = (const sockaddr_in6*)addr;
-            inet_ntop(AF_INET6, &addr6->sin6_addr, ip_str, sizeof(ip_str));
-            port = ntohs(addr6->sin6_port);
         } else {
             strcpy(ip_str, "unknown");
         }
