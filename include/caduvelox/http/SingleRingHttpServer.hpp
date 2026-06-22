@@ -169,18 +169,14 @@ private:
  * HTTP connection handler (pool-allocated)
  * Manages HTTP request/response lifecycle for a single client connection
  */
-class HttpConnectionJob : public IoJob {
-    
+class HttpConnectionJob {
+
 public:
     /**
      * Start reading from the connection
      * Must be called after the object is created
      */
     void start();
-
-    // IoJob interface
-    void prepareSqe(struct io_uring_sqe* sqe) override;
-    std::optional<CleanupCallback> handleCompletion(Server& server, struct io_uring_cqe* cqe) override;
 
     // Constructor needs to be public for pool allocation
     HttpConnectionJob(int client_fd, Server& job_server, const HttpRouter& router,

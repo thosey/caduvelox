@@ -18,14 +18,6 @@
 #include <sstream>
 #include <algorithm>
 
-namespace {
-    void cleanupHttpConnectionJob(caduvelox::IoJob* job) {
-        caduvelox::PoolManager::deallocate(
-            static_cast<caduvelox::HttpConnectionJob*>(job)
-        );
-    }
-}
-
 namespace caduvelox {
 
 SingleRingHttpServer::SingleRingHttpServer(Server& job_server)
@@ -398,21 +390,8 @@ HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const Ht
     // Don't start reading here - must be called after object is in shared_ptr
 }
 
-void HttpConnectionJob::prepareSqe(struct io_uring_sqe* sqe) {
-    // This job doesn't submit its own operations - it manages ReadJob/WriteJob instead
-    (void)sqe;
-}
-
 void HttpConnectionJob::start() {
     startReading();
-}
-
-std::optional<IoJob::CleanupCallback> HttpConnectionJob::handleCompletion(Server& server, struct io_uring_cqe* cqe) {
-    // This job doesn't handle completions directly - ReadJob/WriteJob do
-    // Jobs manage their own lifecycle with pools now
-    (void)server;
-    (void)cqe;
-    return cleanupHttpConnectionJob;
 }
 
 void HttpConnectionJob::startReading() {
@@ -790,17 +769,8 @@ void HttpConnectionJob::closeConnection() {
     idle_cancel_pending_ = false;
     active_read_job_ = nullptr;
 
-    // Submit a NOP with this job as user_data so Server::handleCompletion fires
-    // handleCompletion() → returns cleanupHttpConnectionJob → pool deallocation.
-    struct io_uring_sqe* sqe = job_server_.registerJob(this);
-    if (sqe) {
-        io_uring_prep_nop(sqe);
-        job_server_.submit();
-    } else {
-        // Ring is full at cleanup time — this pool slot cannot be recovered.
-        Logger::getInstance().logError("HttpConnectionJob: Failed to queue cleanup NOP, pool slot leaked");
-    }
     // Do not access 'this' after this point.
+    PoolManager::deallocate(this);
 }
 
 bool HttpConnectionJob::submitRecvCancel() {
