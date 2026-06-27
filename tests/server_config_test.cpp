@@ -5,6 +5,7 @@
 #include "caduvelox/jobs/AcceptJob.hpp"
 #include "caduvelox/jobs/WriteJob.hpp"
 #include "caduvelox/util/PoolManager.hpp"
+#include <stdexcept>
 
 namespace {
 
@@ -96,6 +97,42 @@ TEST(ServerConfigTest, DefaultPoolCapacitiesMatchServerConfigDefaults) {
               static_cast<size_t>(defaults.accept_pool_size));
     EXPECT_EQ(caduvelox::PoolManager::getCapacity<caduvelox::WriteJob>(),
               static_cast<size_t>(defaults.write_pool_size));
+}
+
+// ============================================================================
+// Pool capacity validation — item #16
+// ============================================================================
+
+TEST(ServerConfigTest, ValidatePassesForDefaultConfig) {
+    caduvelox::ServerConfig cfg;
+    EXPECT_NO_THROW(cfg.validate());
+}
+
+TEST(ServerConfigTest, ValidateThrowsOnZeroConnectionPool) {
+    caduvelox::ServerConfig cfg;
+    cfg.connection_pool_size = 0;
+    EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(ServerConfigTest, ValidateThrowsOnZeroKtlsPool) {
+    caduvelox::ServerConfig cfg;
+    cfg.ktls_pool_size = 0;
+    EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(ServerConfigTest, HttpServerThrowsOnZeroConnectionPoolSize) {
+    caduvelox::ServerConfig cfg;
+    cfg.connection_pool_size = 0;
+    EXPECT_THROW(caduvelox::HttpServer server(cfg), std::invalid_argument);
+}
+
+TEST(ServerConfigTest, SetCapacityZeroAssertsInDebug) {
+    // In debug builds (NDEBUG not defined), setCapacity(0) triggers an assert.
+    // In release builds this check is skipped; ServerConfig::validate() is the
+    // production-time guard for misconfigured capacities.
+    EXPECT_DEBUG_DEATH(
+        caduvelox::PoolManager::setCapacity<caduvelox::KTLSJob>(0u),
+        "cap > 0");
 }
 
 } // namespace

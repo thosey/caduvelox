@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdexcept>
+#include <string>
+
 namespace caduvelox {
 
 /**
@@ -36,6 +39,19 @@ struct ServerConfig {
 
     // Threading
     int num_rings = 0;  // 0 = auto-detect via hardware_concurrency()
+
+    void validate() const {
+        auto check = [](unsigned v, const char* name) {
+            if (v == 0)
+                throw std::invalid_argument(
+                    std::string("ServerConfig: ") + name + " must be > 0");
+        };
+        check(ktls_pool_size,       "ktls_pool_size");
+        check(accept_pool_size,     "accept_pool_size");
+        check(write_pool_size,      "write_pool_size");
+        check(file_job_pool_size,   "file_job_pool_size");
+        check(connection_pool_size, "connection_pool_size");
+    }
 };
 
 } // namespace caduvelox

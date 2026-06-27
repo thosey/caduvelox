@@ -1,6 +1,7 @@
 #pragma once
 
 #include "caduvelox/util/ThreadLocalPool.hpp"
+#include <cassert>
 #include <memory>
 
 namespace caduvelox {
@@ -93,6 +94,7 @@ public:
      */
     template<typename T>
     static void setCapacity(size_t cap) {
+        assert(cap > 0 && "PoolManager::setCapacity: capacity must be > 0");
         PoolCapacityConfig<T>::capacity = cap;
     }
 

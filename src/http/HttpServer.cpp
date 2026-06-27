@@ -9,7 +9,6 @@
 #include "caduvelox/logger/Logger.hpp"
 #include "caduvelox/util/PoolManager.hpp"
 #include <thread>
-#include <stdexcept>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -27,6 +26,10 @@ HttpServer::HttpServer(const ServerConfig& cfg)
     if (config_.num_rings <= 0) {
         config_.num_rings = static_cast<int>(std::thread::hardware_concurrency());
     }
+
+    // Validate config before touching any pools — throws std::invalid_argument
+    // on zero pool sizes so misconfiguration is caught at construction time.
+    config_.validate();
 
     // Apply pool capacities from config before any ring threads are started.
     // Thread-local pools are initialised on first access, so these writes are
