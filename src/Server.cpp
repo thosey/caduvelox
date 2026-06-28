@@ -11,7 +11,7 @@
 namespace caduvelox {
 
 Server::Server()
-    : ring_{}, running_(false),
+    : ring_{},
       server_state_(&local_state_),
       buffer_ring_coordinator_(std::make_shared<BufferRingCoordinator>()) {
     ring_.ring_fd = -1;  // sentinel: ring not yet initialized; distinguishes uninit from fd 0 (stdin)
@@ -41,13 +41,11 @@ bool Server::init(unsigned queue_depth, unsigned buf_count, size_t buf_size) {
 }
 
 void Server::run() {
-    running_.store(true, std::memory_order_relaxed);
-
     if (startup_fn_) {
         startup_fn_(*this);
     }
 
-    while (running_.load(std::memory_order_relaxed)) {
+    while (server_state_->load(std::memory_order_acquire) == ServerState::Running) {
         processCompletions();
     }
 
@@ -58,8 +56,15 @@ void Server::run() {
 }
 
 void Server::stop() {
-    running_.store(false, std::memory_order_relaxed);
-    
+    // Transition to Stopping so the run() loop exits on next iteration.
+    // In the multi-ring HttpServer case, HttpServer::stop() has already CAS'd
+    // the shared state_ to Stopping before calling ring->stop(), so this CAS
+    // fails harmlessly — the important effect is the wakeup NOP below.
+    ServerState expected = ServerState::Running;
+    server_state_->compare_exchange_strong(expected, ServerState::Stopping,
+                                           std::memory_order_acq_rel,
+                                           std::memory_order_acquire);
+
     // Early return if ring was never initialized (init() failed or never called)
     if (ring_.ring_fd < 0) {
         Logger::getInstance().logMessage("Server: Stop requested (ring not initialized)");
