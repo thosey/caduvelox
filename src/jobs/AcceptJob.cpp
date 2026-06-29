@@ -6,9 +6,11 @@
 #include <liburing.h>
 #include <sys/socket.h>
 
-// Default pool capacity for AcceptJob (overridable at runtime via ServerConfig).
+// AcceptJob is multishot: one job services all connections on a listening socket.
+// Pool size 2 covers the brief error-recovery window where on_error_ allocates a
+// fresh AcceptJob before the old one's cleanup callback has fired.
 template<>
-size_t caduvelox::PoolCapacityConfig<caduvelox::AcceptJob>::capacity = 1000;
+size_t caduvelox::PoolCapacityConfig<caduvelox::AcceptJob>::capacity = 2;
 
 namespace caduvelox {
 
@@ -17,7 +19,6 @@ AcceptJob::AcceptJob(int server_fd)
 }
 
 
-// New pool-based factory method
 AcceptJob* AcceptJob::create(int server_fd,
                             ConnectionCallback on_connection,
                             ErrorCallback on_error) {
@@ -47,7 +48,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
             return std::nullopt;
         }
 
-        // Unrecoverable error, or any error during shutdown — return job to pool.
+        // Unrecoverable error, or any error during shutdown — free the heap-allocated job.
         return [](IoJob* job) {
             delete static_cast<AcceptJob*>(job);
         };
@@ -60,7 +61,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
             if (shutting_down) {
                 // Do not re-arm the accept during shutdown.
                 return [](IoJob* job) {
-                    PoolManager::deallocate(static_cast<AcceptJob*>(job));
+                    delete static_cast<AcceptJob*>(job);
                 };
             }
             resubmitAccept(server);
@@ -89,7 +90,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
     if (!(cqe->flags & IORING_CQE_F_MORE)) {
         if (shutting_down) {
             return [](IoJob* job) {
-                PoolManager::deallocate(static_cast<AcceptJob*>(job));
+                delete static_cast<AcceptJob*>(job);
             };
         }
         resubmitAccept(server);

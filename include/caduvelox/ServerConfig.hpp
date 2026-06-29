@@ -28,7 +28,7 @@ struct ServerConfig {
 
     // Job pool sizes (per ring thread — no cross-thread contention)
     unsigned ktls_pool_size            = 5000;   // Max concurrent TLS handshakes
-    unsigned accept_pool_size          = 1000;   // Max concurrent accept operations
+    unsigned accept_pool_size          = 2;      // One live AcceptJob per ring; 2 covers error-recovery overlap
     unsigned write_pool_size           = 10000;  // Max concurrent write operations
     unsigned file_job_pool_size        = 1000;   // Max concurrent file transfer operations
     unsigned connection_pool_size      = 10000;  // Max concurrent HTTP connections

@@ -19,7 +19,7 @@ TEST(ServerConfigTest, DefaultsMatchHardCodedValues) {
     EXPECT_EQ(cfg.buffer_ring_count,          512u);
     EXPECT_EQ(cfg.buffer_size_bytes,        16384u);
     EXPECT_EQ(cfg.ktls_pool_size,            5000u);
-    EXPECT_EQ(cfg.accept_pool_size,          1000u);
+    EXPECT_EQ(cfg.accept_pool_size,             2u);
     EXPECT_EQ(cfg.write_pool_size,          10000u);
     EXPECT_EQ(cfg.file_job_pool_size,        1000u);
     EXPECT_EQ(cfg.connection_pool_size,     10000u);

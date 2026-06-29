@@ -94,7 +94,7 @@ bool SingleRingHttpServer::listen(int port, const std::string& bind_addr) {
     return true;
 }
 
-bool SingleRingHttpServer::listenKTLS(int port, const std::string& cert_path, const std::string& key_path, 
+bool SingleRingHttpServer::listenKTLS(int port, const std::string& cert_path, const std::string& key_path,
                               const std::string& bind_addr) {
     if (running_) {
         Logger::getInstance().logError("HttpServer: Server is already running");
