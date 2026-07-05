@@ -183,7 +183,8 @@ void SingleRingHttpServer::startAccepting() {
 
     // Guard against pool exhaustion
     if (!accept_job) {
-        Logger::getInstance().logError("HttpServer: Failed to allocate AcceptJob (pool exhausted?)");
+        Logger::getInstance().logError("[POOL_EXHAUSTED] type=AcceptJob capacity=" +
+            std::to_string(PoolManager::getCapacity<AcceptJob>()));
         // Try again after a brief delay - this is a critical operation
         // In production, you might want exponential backoff or alerting
         return;
@@ -239,7 +240,9 @@ void SingleRingHttpServer::handleNewConnection(int client_fd, const sockaddr* ad
 
         // Guard against pool exhaustion
         if (!ktls_job) {
-            Logger::getInstance().logError("HttpServer: Failed to allocate KTLSJob (pool exhausted?), closing connection");
+            Logger::getInstance().logError("[POOL_EXHAUSTED] type=KTLSJob capacity=" +
+                std::to_string(PoolManager::getCapacity<KTLSJob>()) +
+                " fd=" + std::to_string(client_fd));
             close(client_fd);
             return;
         }
@@ -269,7 +272,9 @@ void SingleRingHttpServer::createConnectionHandler(int client_fd) {
     auto connection_job = PoolManager::allocate<HttpConnectionJob>(client_fd, job_server_, router_, 1024 * 1024, idle_timeout_ms_);
     
     if (!connection_job) {
-        Logger::getInstance().logError("HttpServer: Failed to allocate HttpConnectionJob from pool");
+        Logger::getInstance().logError("[POOL_EXHAUSTED] type=HttpConnectionJob capacity=" +
+            std::to_string(PoolManager::getCapacity<HttpConnectionJob>()) +
+            " fd=" + std::to_string(client_fd));
         close(client_fd);
         return;
     }
@@ -413,7 +418,9 @@ void HttpConnectionJob::startReading() {
     );
 
     if (!read_job) {
-        Logger::getInstance().logError("HttpConnectionJob: Failed to allocate MultishotRecvJob from pool");
+        Logger::getInstance().logError("[POOL_EXHAUSTED] type=MultishotRecvJob capacity=" +
+            std::to_string(PoolManager::getCapacity<HttpMultishotRecvJob>()) +
+            " fd=" + std::to_string(client_fd_));
         reading_active_ = false;
         return;
     }
@@ -610,7 +617,9 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             http_file_job->start(job_server_);
             Logger::getInstance().logMessage("HttpConnectionJob: HTTPFileJob started");
         } else {
-            Logger::getInstance().logError("HttpConnectionJob: Failed to allocate HTTPFileJob from pool");
+            Logger::getInstance().logError("[POOL_EXHAUSTED] type=HTTPFileJob capacity=" +
+                std::to_string(PoolManager::getCapacity<HTTPFileJob>()) +
+                " fd=" + std::to_string(client_fd_));
             pending_writes_--;  // Decrement since allocation failed
             closeConnection();
         }
@@ -690,7 +699,9 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             closeConnection();
         }
     } else {
-        Logger::getInstance().logError("HttpConnectionJob: Failed to allocate WriteJob from pool");
+        Logger::getInstance().logError("[POOL_EXHAUSTED] type=WriteJob capacity=" +
+            std::to_string(PoolManager::getCapacity<WriteJob>()) +
+            " fd=" + std::to_string(client_fd_));
         pending_writes_--;  // Decrement since allocation failed
         closeConnection();
     }
@@ -796,7 +807,9 @@ void HttpConnectionJob::armIdleTimeout() {
 
     auto* timeout_job = PoolManager::allocate<IdleTimeoutJob>(this, idle_timeout_ms_);
     if (!timeout_job) {
-        Logger::getInstance().logError("HttpConnectionJob: Failed to allocate IdleTimeoutJob from pool");
+        Logger::getInstance().logError("[POOL_EXHAUSTED] type=IdleTimeoutJob capacity=" +
+            std::to_string(PoolManager::getCapacity<IdleTimeoutJob>()) +
+            " fd=" + std::to_string(client_fd_));
         return; // Non-fatal: this wait cycle simply has no idle timeout.
     }
 
