@@ -65,6 +65,28 @@ public:
     }
 
     /**
+     * Get the generation of the pool slot holding ptr. Capture this alongside
+     * a raw pointer that is stored across an async boundary (e.g. inside an
+     * armed io_uring operation), then validate with isValid() before
+     * dereferencing. Must be called on the thread that owns the pool.
+     */
+    template<typename T>
+    static uint64_t generation(const T* ptr) {
+        return getPool<T>().generationOf(ptr);
+    }
+
+    /**
+     * Check whether ptr still refers to the same live object it did when gen
+     * was captured via generation(). Returns false if the object was
+     * deallocated (or its slot recycled) since. Must be called on the thread
+     * that owns the pool.
+     */
+    template<typename T>
+    static bool isValid(const T* ptr, uint64_t gen) {
+        return getPool<T>().isLive(ptr, gen);
+    }
+
+    /**
      * Get stats for a specific pool type
      */
     template<typename T>

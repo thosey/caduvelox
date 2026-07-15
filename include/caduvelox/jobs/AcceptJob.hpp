@@ -41,14 +41,27 @@ public:
     // Start the job (submit initial operation)
     void start(Server& server);
 
+    /**
+     * Bind the owner's tracking pointer (e.g. SingleRingHttpServer::accept_job_).
+     * When this job terminates and is about to be deleted, it nulls the slot —
+     * but only if the slot still points at this job — so the owner (and its
+     * shutdown sweep) never dereferences a freed AcceptJob. The slot must
+     * outlive the job.
+     */
+    void bindOwnerSlot(AcceptJob** slot) { owner_slot_ = slot; }
+
     AcceptJob(int server_fd);
 
 private:
     void submitAccept(Server& server);
     void resubmitAccept(Server& server);  // For internal re-submission when already managed
+    // Null the bound owner slot if it still points at this job. Called on every
+    // path that returns a delete-cleanup from handleCompletion.
+    void clearOwnerSlot();
 
     int server_fd_;
-    
+    AcceptJob** owner_slot_ = nullptr;
+
     ConnectionCallback on_connection_;
     ErrorCallback on_error_;
 };

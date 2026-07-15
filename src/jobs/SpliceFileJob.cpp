@@ -31,7 +31,9 @@ SpliceFileJob::SpliceFileJob(int client_fd, int file_fd, uint64_t offset, uint64
     , bytes_in_pipe_(0)
     , pending_operations_(0)
     , current_chunk_size_(0)
-    , error_pending_(false) {
+    , error_pending_(false)
+    , retry_pending_(false)
+    , deferred_error_(0) {
     
     pipe_fds_[0] = -1;
     pipe_fds_[1] = -1;
@@ -97,17 +99,71 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
     // Handle linked operations
     if (pending_operations_ > 0) {
         pending_operations_--;
-        
+
         if (result < 0) {
+            if (-result == ECANCELED) {
+                // The kernel completes the linked partner with -ECANCELED when its
+                // predecessor fails. The predecessor's completion already recorded
+                // what to do (retry_pending_ / deferred_error_); act only once the
+                // whole pair has drained — freeing this job earlier would leave a
+                // kernel op pointing at freed memory.
+                if (pending_operations_ > 0) {
+                    return std::nullopt;
+                }
+                if (retry_pending_) {
+                    retry_pending_ = false;
+                    // Restart the full linked pair; if nothing could be
+                    // submitted, the error callback has fired — free the job.
+                    if (startLinkedSplice(server)) {
+                        return std::nullopt;
+                    }
+                    return cleanupSpliceFileJob;
+                }
+                int err = deferred_error_ != 0 ? deferred_error_ : ECANCELED;
+                deferred_error_ = 0;
+                Logger::getInstance().logError("SpliceFileJob: linked splice pair failed fd=" +
+                                             std::to_string(client_fd_) + ", error=" + std::to_string(err));
+                if (on_error_) {
+                    on_error_(client_fd_, err);
+                }
+                return cleanupSpliceFileJob;
+            }
+
             // Handle EAGAIN/EWOULDBLOCK - socket buffer full, retry
             if (-result == EAGAIN || -result == EWOULDBLOCK) {
+                if (pending_operations_ > 0) {
+                    // First leg of a linked pair: its partner completes with
+                    // -ECANCELED next. Defer the retry until the pair drains,
+                    // then restart the full pair (resubmitting just this leg
+                    // would desync the state machine from what's in flight).
+                    Logger::getInstance().logMessage("SpliceFileJob: EAGAIN on linked leg, retrying pair after drain");
+                    retry_pending_ = true;
+                    return std::nullopt;
+                }
+                if (error_pending_) {
+                    // Half-submitted pair (sqe2 allocation failed): don't retry a
+                    // lone leg; report the original submission failure.
+                    if (on_error_) {
+                        on_error_(client_fd_, ENOMEM);
+                    }
+                    return cleanupSpliceFileJob;
+                }
                 Logger::getInstance().logMessage("SpliceFileJob: Got EAGAIN/EWOULDBLOCK, resubmitting operation");
                 pending_operations_++;  // Restore counter
-                // Resubmit the same operation
-                resubmit(server);
-                return std::nullopt; // Continue operation
+                // Resubmit the same standalone operation (pipe→socket leg or drain);
+                // if resubmission failed, the error callback has fired — free the job.
+                if (resubmit(server)) {
+                    return std::nullopt; // Continue operation
+                }
+                return cleanupSpliceFileJob;
             }
-            
+
+            // Real error. If the linked partner is still in flight, its
+            // -ECANCELED completion must drain before this job can be freed.
+            if (pending_operations_ > 0) {
+                deferred_error_ = -result;
+                return std::nullopt;
+            }
             Logger::getInstance().logError("SpliceFileJob: linked splice operation failed fd=" +
                                          std::to_string(client_fd_) + ", error=" + std::to_string(-result));
             if (on_error_) {
@@ -153,18 +209,24 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
             
             // CRITICAL: Check if pipe still has bytes (partial write)
             if (bytes_in_pipe_ > 0) {
-                Logger::getInstance().logMessage("SpliceFileJob: Partial pipe->socket write, " + 
+                Logger::getInstance().logMessage("SpliceFileJob: Partial pipe->socket write, " +
                                                std::to_string(bytes_in_pipe_) + " bytes still in pipe, draining...");
-                // Must drain the pipe before starting next file->pipe operation
-                drainPipeToSocket(server);
-                return std::nullopt; // Continue draining
+                // Must drain the pipe before starting next file->pipe operation;
+                // if nothing could be submitted, the error callback has fired.
+                if (drainPipeToSocket(server)) {
+                    return std::nullopt; // Continue draining
+                }
+                return cleanupSpliceFileJob;
             }
-            
+
             // Pipe is empty, both linked operations completed
             if (remaining_ > 0) {
-                // Start next linked splice for remaining data
-                startLinkedSplice(server);
-                return std::nullopt; // Continue with next chunk
+                // Start next linked splice for remaining data; if nothing could
+                // be submitted, the completion/error callback has fired.
+                if (startLinkedSplice(server)) {
+                    return std::nullopt; // Continue with next chunk
+                }
+                return cleanupSpliceFileJob;
             } else {
                 // Transfer complete
                 Logger::getInstance().logMessage("SpliceFileJob: Transfer complete fd=" + 
@@ -185,22 +247,26 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
 }
 
 void SpliceFileJob::start(Server& server) {
-    Logger::getInstance().logMessage("SpliceFileJob: Starting splice transfer fd=" + 
+    Logger::getInstance().logMessage("SpliceFileJob: Starting splice transfer fd=" +
                                    std::to_string(client_fd_) + " from file_fd=" + std::to_string(file_fd_));
-    
+
     // Create the pipe first
     createPipe();
-    
+
     if (pipe_fds_[0] < 0 || pipe_fds_[1] < 0) {
         Logger::getInstance().logError("SpliceFileJob: Failed to create pipe");
         if (on_error_) {
             on_error_(client_fd_, ENOMEM);
         }
+        PoolManager::deallocate(this);
         return;
     }
-    
-    // Start the first linked splice operation (file → pipe → socket)
-    startLinkedSplice(server);
+
+    // Start the first linked splice operation (file → pipe → socket).
+    // If nothing was submitted, the error callback has fired — free the job.
+    if (!startLinkedSplice(server)) {
+        PoolManager::deallocate(this);
+    }
 }
 
 void SpliceFileJob::createPipe() {
@@ -215,33 +281,33 @@ void SpliceFileJob::createPipe() {
                                    std::to_string(pipe_fds_[0]) + ", " + std::to_string(pipe_fds_[1]) + "]");
 }
 
-void SpliceFileJob::startLinkedSplice(Server& server) {
+bool SpliceFileJob::startLinkedSplice(Server& server) {
     // Determine chunk size for this splice operation
     size_t chunk_size = SPLICE_CHUNK_SIZE;
     if (remaining_ > 0 && remaining_ < chunk_size) {
         chunk_size = remaining_;
     }
-    
+
     if (chunk_size == 0) {
         // No more data to transfer
-        Logger::getInstance().logMessage("SpliceFileJob: Transfer complete fd=" + 
+        Logger::getInstance().logMessage("SpliceFileJob: Transfer complete fd=" +
                                        std::to_string(client_fd_) + ", total=" + std::to_string(total_transferred_));
         if (on_complete_) {
             on_complete_(client_fd_, total_transferred_);
         }
-        return;
+        return false;
     }
-    
-    Logger::getInstance().logMessage("SpliceFileJob: Starting linked splice - chunk_size=" + 
+
+    Logger::getInstance().logMessage("SpliceFileJob: Starting linked splice - chunk_size=" +
                                    std::to_string(chunk_size) + ", offset=" + std::to_string(offset_));
-    
+
     // Get SQE for file→pipe splice (stage 1)
     struct io_uring_sqe* sqe1 = server.registerJob(this);
     if (!sqe1) {
         if (on_error_) {
             on_error_(client_fd_, -ENOMEM);
         }
-        return;
+        return false;
     }
     
     // Set up file→pipe splice with linking
@@ -261,7 +327,7 @@ void SpliceFileJob::startLinkedSplice(Server& server) {
         error_pending_ = true;
         pending_operations_ = 1;
         server.submit();
-        return;
+        return true;
     }
     
     // Set up pipe→socket splice (linked)
@@ -275,52 +341,55 @@ void SpliceFileJob::startLinkedSplice(Server& server) {
     state_ = SplicingFileToPipe;  // We'll track state through completions
     pending_operations_ = 2;      // Expect 2 completions
     current_chunk_size_ = chunk_size;
-    
+
     // Submit both linked operations
     server.submit();
+    return true;
 }
 
-void SpliceFileJob::drainPipeToSocket(Server& server) {
+bool SpliceFileJob::drainPipeToSocket(Server& server) {
     // Drain remaining bytes from pipe to socket (after partial write)
     // We know bytes_in_pipe_ > 0, so submit a pipe→socket splice for those bytes
-    
-    Logger::getInstance().logMessage("SpliceFileJob: Draining " + std::to_string(bytes_in_pipe_) + 
+
+    Logger::getInstance().logMessage("SpliceFileJob: Draining " + std::to_string(bytes_in_pipe_) +
                                    " bytes from pipe to socket");
-    
+
     struct io_uring_sqe* sqe = server.registerJob(this);
     if (!sqe) {
         Logger::getInstance().logError("SpliceFileJob: Failed to get SQE for drain operation");
         if (on_error_) {
             on_error_(client_fd_, -ENOMEM);
         }
-        return;
+        return false;
     }
-    
+
     // Set up pipe→socket splice for remaining bytes
     io_uring_prep_splice(sqe,
                         pipe_fds_[0], -1,           // source: pipe read end
                         client_fd_, -1,             // dest: socket
                         bytes_in_pipe_,             // drain all remaining bytes
                         0);                         // no special flags
-    
+
     // Stay in SplicingPipeToSocket state
     state_ = SplicingPipeToSocket;
     pending_operations_ = 1;  // Expect 1 completion for the drain
-    
+
     server.submit();
+    return true;
 }
 
-void SpliceFileJob::resubmit(Server& server) {
+bool SpliceFileJob::resubmit(Server& server) {
     // Resubmit the current operation
     struct io_uring_sqe* sqe = server.registerJob(this);
     if (sqe) {
         prepareSqe(sqe);
         server.submit();
-    } else {
-        if (on_error_) {
-            on_error_(client_fd_, -ENOMEM);
-        }
+        return true;
     }
+    if (on_error_) {
+        on_error_(client_fd_, -ENOMEM);
+    }
+    return false;
 }
 
 void SpliceFileJob::cleanup() {

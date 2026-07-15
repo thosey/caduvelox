@@ -49,6 +49,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
         }
 
         // Unrecoverable error, or any error during shutdown — free the heap-allocated job.
+        clearOwnerSlot();
         return [](IoJob* job) {
             delete static_cast<AcceptJob*>(job);
         };
@@ -60,6 +61,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
         if (!(cqe->flags & IORING_CQE_F_MORE)) {
             if (shutting_down) {
                 // Do not re-arm the accept during shutdown.
+                clearOwnerSlot();
                 return [](IoJob* job) {
                     delete static_cast<AcceptJob*>(job);
                 };
@@ -89,6 +91,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
     // If IORING_CQE_F_MORE is not set the multishot has terminated.
     if (!(cqe->flags & IORING_CQE_F_MORE)) {
         if (shutting_down) {
+            clearOwnerSlot();
             return [](IoJob* job) {
                 delete static_cast<AcceptJob*>(job);
             };
@@ -98,6 +101,14 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
     }
 
     return std::nullopt; // Continue multishot.
+}
+
+void AcceptJob::clearOwnerSlot() {
+    // Only clear if the owner still tracks this job — the error path may have
+    // already replaced it with a fresh AcceptJob via on_error_ → startAccepting().
+    if (owner_slot_ && *owner_slot_ == this) {
+        *owner_slot_ = nullptr;
+    }
 }
 
 void AcceptJob::start(Server& server) {

@@ -179,7 +179,6 @@ void SingleRingHttpServer::startAccepting() {
             }
         }
     );
-    accept_job_ = accept_job;
 
     // Guard against pool exhaustion
     if (!accept_job) {
@@ -193,6 +192,11 @@ void SingleRingHttpServer::startAccepting() {
     struct io_uring_sqe* sqe = job_server_.registerJob(accept_job);
     if (sqe) {
         accept_job->prepareSqe(sqe);
+        // Track the job only once it is actually armed. The job nulls this
+        // slot itself when it terminates and self-deletes, so the shutdown
+        // sweep never touches a freed AcceptJob.
+        accept_job->bindOwnerSlot(&accept_job_);
+        accept_job_ = accept_job;
         job_server_.submit();
     } else {
         Logger::getInstance().logError("HttpServer: Failed to register AcceptJob");
@@ -406,8 +410,10 @@ void HttpConnectionJob::startReading() {
 
     reading_active_ = true;
 
-    // Create handler instance (encapsulates context + callbacks)
-    HttpConnectionRecvHandler handler{this};
+    // Create handler instance (encapsulates context + callbacks).
+    // Capture this connection's pool generation so late recv completions
+    // arriving after this connection is freed/recycled are dropped.
+    HttpConnectionRecvHandler handler{this, PoolManager::generation<HttpConnectionJob>(this)};
 
     // Zero-copy path: use token-based MultishotRecvJob for inline processing on io_uring thread
     // Template policy pattern - type-safe, fully inlineable callbacks
@@ -727,7 +733,8 @@ void HttpConnectionJob::closeConnection() {
                 idle_cancel_pending_ = true;
             } else {
                 // Cancel submission failed (pool or SQE exhausted) — fall through;
-                // the timer will fire naturally later and no-op against a closed fd.
+                // the timer will fire naturally later, and its pool-generation check
+                // on this (by then freed) connection makes it a true no-op.
                 Logger::getInstance().logError("HttpConnectionJob: Failed to submit idle-timeout cancel");
                 active_idle_timeout_job_ = nullptr;
             }
@@ -749,7 +756,12 @@ void HttpConnectionJob::closeConnection() {
                 read_cancel_pending_ = true;
             } else {
                 // Cancel submission failed (pool or SQE exhausted) — fall through and
-                // close the fd immediately; the recv will terminate naturally with EBADF.
+                // close our fd reference now. Note: this does NOT terminate the armed
+                // multishot recv; an in-flight io_uring op holds its own reference to
+                // the socket, so it stays parked until the peer sends data, closes, or
+                // the ring shuts down. When its completion eventually fires, the recv
+                // handler's pool-generation check sees this connection is gone and
+                // drops it, and the recv job frees itself on the terminal completion.
                 Logger::getInstance().logError("HttpConnectionJob: Failed to submit recv cancel, closing fd immediately");
                 active_read_job_ = nullptr;
             }

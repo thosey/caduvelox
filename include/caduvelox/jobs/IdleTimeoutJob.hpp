@@ -29,6 +29,13 @@ public:
 
 private:
     HttpConnectionJob* owner_;
+    // Pool generation of owner_ at arm time. The connection may be freed (and
+    // its pool slot recycled) while this timer is still armed — e.g. when
+    // closeConnection() could not submit a cancel due to pool/SQE exhaustion.
+    // handleCompletion() validates (owner_, owner_gen_) via PoolManager before
+    // dereferencing so a stale completion is ignored instead of touching freed
+    // or recycled memory.
+    uint64_t owner_gen_;
     // Must remain valid until the request completes or is cancelled — the kernel
     // reads it when the SQE is processed and may hold a reference until then.
     __kernel_timespec ts_{};

@@ -78,6 +78,7 @@ set(TEST_SOURCES
     # Utility/Data Structure Tests (architecture-agnostic)
     util/ring_buffer/mpmc_ring_buffer_test.cpp
     util/ring_buffer/notifying_ring_buffer_test.cpp
+    util/thread_local_pool_test.cpp
     # Router Unit Tests (architecture-agnostic)
     http_router_unit_test.cpp
     # Parser Unit Tests

@@ -63,9 +63,13 @@ private:
     };
 
     void createPipe();
-    void startLinkedSplice(Server& server);
-    void drainPipeToSocket(Server& server);  // Drain remaining bytes from partial write
-    void resubmit(Server& server);
+    // The three submission helpers return true if kernel operations are now in
+    // flight (the job must stay alive for their completions), false if the job
+    // is finished — a completion/error callback has already fired and the
+    // caller must free the job.
+    bool startLinkedSplice(Server& server);
+    bool drainPipeToSocket(Server& server);  // Drain remaining bytes from partial write
+    bool resubmit(Server& server);
     void cleanup();
 
     State state_;
@@ -80,6 +84,11 @@ private:
     int pending_operations_;  // Track linked operations
     size_t current_chunk_size_;  // Size of current chunk being transferred
     bool error_pending_;  // sqe2 alloc failed in startLinkedSplice; waiting for sqe1 completion
+    // When the first leg of a linked pair fails, the kernel completes the
+    // linked partner with -ECANCELED. We must NOT free this job (or resubmit
+    // into a diverged state) until that partner CQE has drained:
+    bool retry_pending_;   // first leg hit EAGAIN; restart the full pair once drained
+    int deferred_error_;   // first leg hit a real error; report it once drained (0 = none)
     
     CompletionCallback on_complete_;
     ErrorCallback on_error_;
