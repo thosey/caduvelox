@@ -29,6 +29,11 @@ struct HttpConnectionRecvHandler {
     // Zero-copy token processing (inline on io_uring thread)
     // Token passed by reference - lifecycle managed by caller's scope
     void onDataToken(ProvidedBufferToken& token);
+
+    // Asked when the kernel ends the multishot (IORING_CQE_F_MORE cleared) to
+    // decide whether the recv should be re-armed. False once the connection is
+    // closing or has already been freed/recycled.
+    bool shouldRearmRecv();
 };
 
 } // namespace caduvelox

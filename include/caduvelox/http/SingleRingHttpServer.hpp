@@ -187,6 +187,21 @@ public:
     void handleReadError(int error);
     int getClientFd() const { return client_fd_; }
 
+    /**
+     * Whether this connection still wants its read stream to continue.
+     * Consulted by the recv job when the kernel ends the multishot, to decide
+     * between re-arming and tearing down. False once a close has begun, so a
+     * connection on its way out is never revived.
+     *
+     * Safe to answer for "is the completing recv job still ours?" because a
+     * connection arms at most one recv at a time: startReading() returns early
+     * while reading_active_ is set, so active_read_job_ is the completing job.
+     */
+    bool wantsContinuedRead() const {
+        return client_fd_ >= 0 && !close_pending_ && reading_active_ &&
+               active_read_job_ != nullptr;
+    }
+
     // Public for IdleTimeoutJob's completion callback. `job` identifies which
     // timer instance is completing, so a stale completion from a timer that
     // has already been superseded by a fresher one can be safely ignored.

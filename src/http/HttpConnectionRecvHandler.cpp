@@ -25,4 +25,14 @@ void HttpConnectionRecvHandler::onDataToken(ProvidedBufferToken& token) {
     connection->handleDataReceived(token.data(), token.size());
 }
 
+bool HttpConnectionRecvHandler::shouldRearmRecv() {
+    // Same validity gate as the other callbacks: a freed or recycled connection
+    // must never be revived, and nothing should be re-armed on its behalf.
+    if (!connection || !PoolManager::isValid(connection, connection_gen)) {
+        return false;
+    }
+
+    return connection->wantsContinuedRead();
+}
+
 } // namespace caduvelox
