@@ -27,7 +27,11 @@ public:
      * @param client_fd Socket file descriptor to send to
      * @param file_fd File descriptor to send from
      * @param offset Starting offset in file
-     * @param length Number of bytes to transfer (0 = until EOF)
+     * @param length Exact number of bytes to transfer. This is a resolved byte
+     *        count, not a "0 = until EOF" sentinel: the caller must clamp it to
+     *        the file size first (HTTPFileJob does so in openFile(), which is
+     *        also what fixes Content-Length). A length of 0 therefore means there
+     *        is nothing to send, and the transfer completes without any splice.
      * @param on_complete Callback when transfer completes successfully
      * @param on_error Callback when transfer fails
      * @return Pointer to pool-allocated SpliceFileJob, or nullptr if pool exhausted
@@ -70,6 +74,9 @@ private:
     bool startLinkedSplice(Server& server);
     bool drainPipeToSocket(Server& server);  // Drain remaining bytes from partial write
     bool resubmit(Server& server);
+    // Close the pipe's write end so a pipe→socket splice sees EOF instead of
+    // parking forever on a pipe that can never receive more data.
+    void closePipeWriteEnd();
     void cleanup();
 
     State state_;
@@ -89,6 +96,10 @@ private:
     // into a diverged state) until that partner CQE has drained:
     bool retry_pending_;   // first leg hit EAGAIN; restart the full pair once drained
     int deferred_error_;   // first leg hit a real error; report it once drained (0 = none)
+    // The file→pipe leg returned 0 (EOF) with bytes still owed: the file shrank
+    // under us. No further file→pipe splice may be submitted, and the transfer
+    // ends as soon as the linked partner drains.
+    bool eof_reached_;
     
     CompletionCallback on_complete_;
     ErrorCallback on_error_;

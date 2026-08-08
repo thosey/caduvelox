@@ -106,6 +106,7 @@ set(TEST_SOURCES
     http_connection_pool_leak_test.cpp
     multishot_recv_rearm_test.cpp
     multishot_recv_rearm_unit_test.cpp
+    splice_file_eof_test.cpp
     # Shutdown guard tests (Step 4 of SERVER_STATE_PLAN.md)
     shutdown_guard_test.cpp
     # ServerConfig / runtime configurability tests (Workstream 1)
@@ -178,6 +179,7 @@ add_test(NAME MultiRingKTLSShutdownTests COMMAND caduvelox_tests --gtest_filter=
 add_test(NAME HttpConnectionPoolLeakTests COMMAND caduvelox_tests --gtest_filter="HttpConnectionPoolLeakTest.*")
 add_test(NAME MultishotRecvRearmTests COMMAND caduvelox_tests --gtest_filter="MultishotRecvRearmTest.*")
 add_test(NAME MultishotRecvRearmUnitTests COMMAND caduvelox_tests --gtest_filter="MultishotRecvRearmUnitTest.*")
+add_test(NAME SpliceFileEofTests COMMAND caduvelox_tests --gtest_filter="SpliceFileEofTest.*")
 add_test(NAME ShutdownGuardTests COMMAND caduvelox_tests --gtest_filter="ShutdownGuardTest.*")
 add_test(NAME ServerConfigTests COMMAND caduvelox_tests --gtest_filter="ServerConfigTest.*")
 

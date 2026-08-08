@@ -101,9 +101,13 @@ void HTTPFileJob::openFile() {
         length_ = file_size_ - offset_;
     }
     
-    Logger::getInstance().logMessage("HTTPFileJob: File opened fd=" + std::to_string(file_fd_) + 
-                                   ", size=" + std::to_string(file_size_) + 
-                                   ", range=" + std::to_string(offset_) + "-" + std::to_string(offset_ + length_ - 1));
+    // An empty file has no last byte; "offset + length - 1" would underflow.
+    const std::string range = length_ == 0
+        ? "empty"
+        : std::to_string(offset_) + "-" + std::to_string(offset_ + length_ - 1);
+    Logger::getInstance().logMessage("HTTPFileJob: File opened fd=" + std::to_string(file_fd_) +
+                                   ", size=" + std::to_string(file_size_) +
+                                   ", range=" + range);
 }
 
 void HTTPFileJob::startSendingHeaders(Server& server) {

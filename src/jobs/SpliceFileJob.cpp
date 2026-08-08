@@ -33,7 +33,8 @@ SpliceFileJob::SpliceFileJob(int client_fd, int file_fd, uint64_t offset, uint64
     , current_chunk_size_(0)
     , error_pending_(false)
     , retry_pending_(false)
-    , deferred_error_(0) {
+    , deferred_error_(0)
+    , eof_reached_(false) {
     
     pipe_fds_[0] = -1;
     pipe_fds_[1] = -1;
@@ -62,12 +63,11 @@ SpliceFileJob* SpliceFileJob::createFromPool(
 void SpliceFileJob::prepareSqe(struct io_uring_sqe* sqe) {
     switch (state_) {
         case SplicingFileToPipe: {
-            // Determine chunk size for this splice operation
-            size_t chunk_size = SPLICE_CHUNK_SIZE;
-            if (remaining_ > 0 && remaining_ < chunk_size) {
-                chunk_size = remaining_;
-            }
-            
+            // Determine chunk size for this splice operation. remaining_ is an
+            // exact byte count, so clamp unconditionally — see startLinkedSplice().
+            size_t chunk_size = static_cast<size_t>(
+                std::min<uint64_t>(SPLICE_CHUNK_SIZE, remaining_));
+
             // splice(file_fd → pipe[1])
             io_uring_prep_splice(sqe, 
                                 file_fd_, offset_,    // source: file at offset
@@ -182,6 +182,39 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
         }
 
         if (state_ == SplicingFileToPipe) {
+            if (result == 0) {
+                // EOF on the source file while bytes are still owed: the file was
+                // truncated between the caller's fstat() (which fixed
+                // Content-Length) and this splice. There is nothing left to send,
+                // so the transfer must end here — retrying would splice at EOF
+                // forever.
+                //
+                // The linked pipe→socket partner is still outstanding and the job
+                // must stay alive until it drains. Two things can happen to it:
+                //
+                //  1. A short result severs an IOSQE_IO_LINK chain, and 0 is short
+                //     of the requested chunk, so the kernel normally cancels the
+                //     partner with -ECANCELED. deferred_error_ makes that branch
+                //     report the truncation instead of a bare ECANCELED.
+                //  2. If the partner does run, it would splice from an empty pipe
+                //     whose write end we still hold open — an operation that never
+                //     completes, hanging the connection and, worse, hanging
+                //     Server::drainCompletions() on in_flight_ so run() never
+                //     returns at shutdown. Closing the write end turns that splice
+                //     into a clean EOF, so the pair drains either way.
+                Logger::getInstance().logError("SpliceFileJob: EOF on file fd=" +
+                                             std::to_string(file_fd_) + " with " +
+                                             std::to_string(remaining_) + " bytes still expected");
+                eof_reached_ = true;
+                deferred_error_ = EIO;
+                closePipeWriteEnd();
+                // Route case 2's completion to the pipe→socket branch, which ends
+                // the transfer. Do NOT free the job here: the kernel still holds
+                // this pointer as the partner's user_data.
+                state_ = SplicingPipeToSocket;
+                return std::nullopt;
+            }
+
             // This is the file→pipe completion
             Logger::getInstance().logMessage("SpliceFileJob: File->Pipe linked splice: " + std::to_string(result) + " bytes");
             
@@ -220,6 +253,22 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
             }
 
             // Pipe is empty, both linked operations completed
+            if (eof_reached_ && remaining_ > 0) {
+                // The file ended before we could deliver everything Content-Length
+                // promised, so the response body is short and the stream is
+                // unrecoverable. Report an error rather than completing: the owner
+                // closes the connection instead of reusing it for another request.
+                Logger::getInstance().logError("SpliceFileJob: file truncated during transfer fd=" +
+                                             std::to_string(client_fd_) + ", " +
+                                             std::to_string(remaining_) + " bytes undelivered");
+                const int err = deferred_error_ != 0 ? deferred_error_ : EIO;
+                deferred_error_ = 0;
+                if (on_error_) {
+                    on_error_(client_fd_, err);
+                }
+                return cleanupSpliceFileJob;
+            }
+
             if (remaining_ > 0) {
                 // Start next linked splice for remaining data; if nothing could
                 // be submitted, the completion/error callback has fired.
@@ -282,14 +331,21 @@ void SpliceFileJob::createPipe() {
 }
 
 bool SpliceFileJob::startLinkedSplice(Server& server) {
-    // Determine chunk size for this splice operation
-    size_t chunk_size = SPLICE_CHUNK_SIZE;
-    if (remaining_ > 0 && remaining_ < chunk_size) {
-        chunk_size = remaining_;
-    }
+    // Determine chunk size for this splice operation.
+    //
+    // Clamp unconditionally: remaining_ is an exact byte count (the caller
+    // resolves "to end of file" before constructing this job), so remaining_ == 0
+    // means there is nothing left to send. Skipping the clamp in that case left
+    // chunk_size at 64 KiB and spliced at EOF, which for an empty file produced a
+    // zero-byte file→pipe leg followed by a pipe→socket leg that could never
+    // complete — see the result == 0 handling in handleCompletion().
+    size_t chunk_size = static_cast<size_t>(
+        std::min<uint64_t>(SPLICE_CHUNK_SIZE, remaining_));
 
     if (chunk_size == 0) {
-        // No more data to transfer
+        // Nothing to transfer (empty file, or the whole range is already sent).
+        // Complete immediately without submitting anything; for an empty file the
+        // headers the caller already sent are the entire response.
         Logger::getInstance().logMessage("SpliceFileJob: Transfer complete fd=" +
                                        std::to_string(client_fd_) + ", total=" + std::to_string(total_transferred_));
         if (on_complete_) {
@@ -390,6 +446,13 @@ bool SpliceFileJob::resubmit(Server& server) {
         on_error_(client_fd_, -ENOMEM);
     }
     return false;
+}
+
+void SpliceFileJob::closePipeWriteEnd() {
+    if (pipe_fds_[1] >= 0) {
+        close(pipe_fds_[1]);
+        pipe_fds_[1] = -1;  // cleanup() skips it, so this is not a double close
+    }
 }
 
 void SpliceFileJob::cleanup() {
