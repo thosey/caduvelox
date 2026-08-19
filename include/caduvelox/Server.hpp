@@ -17,6 +17,7 @@ namespace caduvelox {
 // Forward declarations
 class BufferRingCoordinator;
 class IoJob;
+class EventFd;
 
 /**
  * Modern job-based server architecture with direct registration.
@@ -63,7 +64,12 @@ public:
     void run();
 
     /**
-     * Stop the event loop
+     * Stop the event loop.
+     *
+     * Safe to call from any thread. This deliberately does not touch the
+     * submission queue: the SQ is owned by the ring thread and liburing's SQ
+     * operations are not thread-safe. The wake-up is a write(2) to an eventfd,
+     * which run() has armed a poll on — see armStopSignal().
      */
     void stop();
 
@@ -131,7 +137,7 @@ public:
 
     /**
      * Invoke the registered shutdown sweep (if any).
-     * Called by StopIoJob when the shutdown wake-up NOP completes on the ring thread.
+     * Called on the ring thread when the stop-signal poll completes.
      */
     void sweepLiveJobsForShutdown();
 
@@ -140,6 +146,16 @@ private:
     void drainCompletions();
     void processAvailableCompletions();  // Helper to process all ready completions
     void handleCompletion(struct io_uring_cqe* cqe);
+
+    /**
+     * Arm a poll on the stop eventfd. Called by run() on the ring thread, which
+     * is the only thread allowed to put anything on the submission queue.
+     */
+    void armStopSignal();
+
+    // user_data marking the stop-signal poll. Zero can never be a job pointer,
+    // so it is unambiguous; every other SQE carries an IoJob* (see registerJob).
+    static constexpr uint64_t STOP_SIGNAL_USER_DATA = 0;
 
     // Core io_uring state (stack allocated like original Server)
     struct io_uring ring_;
@@ -160,6 +176,11 @@ private:
 
     // Buffer ring for zero-copy operations
     std::shared_ptr<BufferRingCoordinator> buffer_ring_coordinator_;
+
+    // Cross-thread wake-up channel for stop(). Created by init(); a foreign
+    // thread writes to it, the ring thread polls it. Writing to an eventfd is
+    // thread-safe, which submitting an SQE is not.
+    std::unique_ptr<EventFd> stop_signal_;
 };
 
 } // namespace caduvelox
