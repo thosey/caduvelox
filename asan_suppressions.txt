@@ -1,6 +1,25 @@
-# ASan suppression file for known third-party library leaks
-# OpenSSL global state leaks (cleaned up at process exit)
+# LeakSanitizer suppression file.
+#
+# Wired in via LSAN_OPTIONS=suppressions=... in .github/workflows/ci.yml.
+# Keep this list short and each entry justified: every suppression is a leak the
+# gate will no longer catch.
+
+# --- Third-party: OpenSSL global state, cleaned up at process exit ---
 leak:libssl.so
 leak:libcrypto.so
 leak:CRYPTO_malloc
 leak:CRYPTO_zalloc
+
+# --- Ours: known, tracked, NOT third-party ---
+#
+# AcceptJob is heap-allocated by AcceptJob::create() and freed only when its
+# multishot accept delivers a terminal CQE. The shutdown path calls
+# requestShutdownCancel() and immediately nulls accept_job_, so if the ring is
+# torn down before the cancel's CQE is drained, the job is stranded. Reproduces
+# in MultiRingKTLSShutdownTest (~2.2 KB over 25 allocations).
+#
+# This is review item M3 (AcceptJob is not actually pool-allocated despite the
+# accept_pool_size config) and neighbours H5. Remove this suppression as part of
+# fixing AcceptJob ownership — it exists so the gate can be turned on now rather
+# than waiting for that work.
+leak:caduvelox::AcceptJob::create

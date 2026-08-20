@@ -110,9 +110,15 @@ jobs:
 
       - name: Set sanitizer env
         run: |
-          mkdir -p asan-logs
-          echo "ASAN_OPTIONS=detect_leaks=1:allocator_may_return_null=1:verbosity=0:log_path=asan-logs/asan:exitcode=0" >> $GITHUB_ENV
-          echo "UBSAN_OPTIONS=print_stacktrace=1" >> $GITHUB_ENV
+          # No exitcode=0: a sanitizer finding must fail the job. No log_path
+          # either — reports go to stderr so they show up inline in the failing
+          # step instead of only inside a downloadable artifact.
+          echo "ASAN_OPTIONS=detect_leaks=1:allocator_may_return_null=1:verbosity=0" >> $GITHUB_ENV
+          # LSan needs its own variable; ASAN_OPTIONS=suppressions is ignored for leaks.
+          echo "LSAN_OPTIONS=suppressions=$GITHUB_WORKSPACE/asan_suppressions.txt" >> $GITHUB_ENV
+          # halt_on_error: UBSan prints and continues by default, so without this
+          # it never fails the job no matter what it finds.
+          echo "UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1" >> $GITHUB_ENV
 
       - name: Build (ASAN)
         run: cmake --build build-asan -- -j 2
@@ -122,7 +128,11 @@ jobs:
           cd build-asan/tests
           # Run the test binary directly under ASAN/UBSAN. Exclude kernel-dependent tests using gtest negative filter.
           # timeout 300: fail fast instead of burning the 6-hour GitHub job limit if a test hangs.
-          timeout 300 ./caduvelox_tests --gtest_filter="-JobKTLS*:StaticHttps*"
+          # tee keeps a copy for the failure artifact while the report still
+          # reaches the job log; PIPESTATUS propagates the real exit code.
+          timeout 300 ./caduvelox_tests --gtest_filter="-JobKTLS*:StaticHttps*" 2>&1 \
+            | tee "$GITHUB_WORKSPACE/build-asan/asan-run.log"
+          exit ${PIPESTATUS[0]}
 
       - name: Upload ASAN logs (if any failures produce sanitizer logs)
         if: failure()
@@ -131,7 +141,6 @@ jobs:
           name: asan-logs
           path: |
             build-asan/Testing/Temporary
-            build-asan/asan-logs
             build-asan/*.log
           retention-days: 14
 
@@ -143,8 +152,8 @@ jobs:
           if [ -d build-asan/Testing/Temporary ]; then
             tar -czf failure_artifacts/testing_temporary.tgz -C build-asan Testing/Temporary || true
           fi
-          if [ -d build-asan/asan-logs ]; then
-            tar -czf failure_artifacts/asan_logs.tgz -C build-asan asan-logs || true
+          if [ -f build-asan/asan-run.log ]; then
+            tar -czf failure_artifacts/asan_run_log.tgz -C build-asan asan-run.log || true
           fi
           ls -la failure_artifacts || true
         shell: bash

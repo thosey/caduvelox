@@ -19,6 +19,12 @@ protected:
         Logger::setGlobalLogger(&console_logger);
     }
 
+    // Declared before server_ so they are destroyed *after* it. ~Server() calls
+    // stop(), which CASes through server_state_ — a TestBody-local atomic is
+    // already dead by then, and ASAN reports the write as stack-use-after-return.
+    std::atomic<ServerState> state_{ServerState::Running};
+    std::atomic<ServerState> state2_{ServerState::Running};
+
     Server server_;
 };
 
@@ -39,8 +45,8 @@ TEST_F(ServerStatePtrTest, DefaultIsAbortingReturnsFalse) {
 // --- Redirect to an external atomic (multi-ring sharing) ---
 
 TEST_F(ServerStatePtrTest, ReflectsRunningState) {
-    std::atomic<ServerState> state{ServerState::Running};
-    server_.bindToServerState(&state);
+    state_.store(ServerState::Running);
+    server_.bindToServerState(&state_);
 
     EXPECT_EQ(server_.getServerState(), ServerState::Running);
     EXPECT_FALSE(server_.isStopping());
@@ -48,8 +54,8 @@ TEST_F(ServerStatePtrTest, ReflectsRunningState) {
 }
 
 TEST_F(ServerStatePtrTest, ReflectsStoppingState) {
-    std::atomic<ServerState> state{ServerState::Stopping};
-    server_.bindToServerState(&state);
+    state_.store(ServerState::Stopping);
+    server_.bindToServerState(&state_);
 
     EXPECT_EQ(server_.getServerState(), ServerState::Stopping);
     EXPECT_TRUE(server_.isStopping());
@@ -57,8 +63,8 @@ TEST_F(ServerStatePtrTest, ReflectsStoppingState) {
 }
 
 TEST_F(ServerStatePtrTest, ReflectsAbortingState) {
-    std::atomic<ServerState> state{ServerState::Aborting};
-    server_.bindToServerState(&state);
+    state_.store(ServerState::Aborting);
+    server_.bindToServerState(&state_);
 
     EXPECT_EQ(server_.getServerState(), ServerState::Aborting);
     EXPECT_FALSE(server_.isStopping());
@@ -66,8 +72,8 @@ TEST_F(ServerStatePtrTest, ReflectsAbortingState) {
 }
 
 TEST_F(ServerStatePtrTest, ReflectsStoppedState) {
-    std::atomic<ServerState> state{ServerState::Stopped};
-    server_.bindToServerState(&state);
+    state_.store(ServerState::Stopped);
+    server_.bindToServerState(&state_);
 
     EXPECT_EQ(server_.getServerState(), ServerState::Stopped);
     EXPECT_FALSE(server_.isStopping());
@@ -77,35 +83,35 @@ TEST_F(ServerStatePtrTest, ReflectsStoppedState) {
 // --- Dynamic changes to the shared atomic are immediately visible ---
 
 TEST_F(ServerStatePtrTest, DynamicTransitionRunningToStopping) {
-    std::atomic<ServerState> state{ServerState::Running};
-    server_.bindToServerState(&state);
+    state_.store(ServerState::Running);
+    server_.bindToServerState(&state_);
 
     EXPECT_FALSE(server_.isStopping());
 
-    state.store(ServerState::Stopping, std::memory_order_release);
+    state_.store(ServerState::Stopping, std::memory_order_release);
 
     EXPECT_TRUE(server_.isStopping());
     EXPECT_EQ(server_.getServerState(), ServerState::Stopping);
 }
 
 TEST_F(ServerStatePtrTest, DynamicEscalationStoppingToAborting) {
-    std::atomic<ServerState> state{ServerState::Stopping};
-    server_.bindToServerState(&state);
+    state_.store(ServerState::Stopping);
+    server_.bindToServerState(&state_);
 
     EXPECT_TRUE(server_.isStopping());
     EXPECT_FALSE(server_.isAborting());
 
-    state.store(ServerState::Aborting, std::memory_order_release);
+    state_.store(ServerState::Aborting, std::memory_order_release);
 
     EXPECT_FALSE(server_.isStopping());
     EXPECT_TRUE(server_.isAborting());
 }
 
 TEST_F(ServerStatePtrTest, DynamicTransitionToStopped) {
-    std::atomic<ServerState> state{ServerState::Stopping};
-    server_.bindToServerState(&state);
+    state_.store(ServerState::Stopping);
+    server_.bindToServerState(&state_);
 
-    state.store(ServerState::Stopped, std::memory_order_release);
+    state_.store(ServerState::Stopped, std::memory_order_release);
 
     EXPECT_FALSE(server_.isStopping());
     EXPECT_FALSE(server_.isAborting());
@@ -115,13 +121,13 @@ TEST_F(ServerStatePtrTest, DynamicTransitionToStopped) {
 // --- Pointer can be swapped to a different atomic ---
 
 TEST_F(ServerStatePtrTest, SwappingPointerReflectsNewState) {
-    std::atomic<ServerState> state1{ServerState::Running};
-    std::atomic<ServerState> state2{ServerState::Stopping};
+    state_.store(ServerState::Running);
+    state2_.store(ServerState::Stopping);
 
-    server_.bindToServerState(&state1);
+    server_.bindToServerState(&state_);
     EXPECT_FALSE(server_.isStopping());
 
-    server_.bindToServerState(&state2);
+    server_.bindToServerState(&state2_);
     EXPECT_TRUE(server_.isStopping());
 }
 
