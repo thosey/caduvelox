@@ -384,7 +384,7 @@ HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const Ht
     , idle_timeout_ms_(idle_timeout_ms)
     , reading_active_(false)
     , keep_alive_(true)  // Default to keep-alive for HTTP/1.1
-    , pending_writes_(0)
+    , response_in_flight_(false)
     , close_pending_(false)
     , active_read_job_(nullptr)
     , read_cancel_pending_(false)
@@ -521,31 +521,76 @@ void HttpConnectionJob::handleReadError(int error) {
 }
 
 void HttpConnectionJob::processHttpRequests() {
-    while (!request_buffer_.empty()) {
-        HttpRequest request;
-        size_t bytes_consumed = 0;
-        
-        auto result = HttpParser::parse_request(
-            request_buffer_, 
-            request, 
-            bytes_consumed
-        );
-
-        if (result == HttpParser::ParseResult::Success) {
-            // Complete request parsed successfully
-            request_buffer_.erase(0, bytes_consumed);
-            handleHttpRequest(request);
-        } else if (result == HttpParser::ParseResult::Incomplete) {
-            // Need more data - wait for next read
-            return;
-        } else {
-            // BadRequest - malformed input, close connection
-            Logger::getInstance().logError("HttpConnectionJob: Malformed HTTP request, closing connection fd=" + 
-                                         std::to_string(client_fd_));
-            closeConnection();
-            return;
-        }
+    // Handles at most ONE request per call.
+    //
+    // This used to loop over every complete request in the buffer, issuing one
+    // WriteJob per response. Those SQEs are independent, and io_uring gives no
+    // ordering guarantee between them: if one write blocks and is punted to an
+    // async worker while the next proceeds inline, the responses interleave on
+    // the socket and the HTTP stream is corrupt. The pipelining tests passed
+    // only because small writes to a healthy socket complete inline — which is
+    // an observation about the happy path, not a contract.
+    //
+    // Now one response is in flight at a time and the next pipelined request is
+    // not parsed until the current one is on the wire. onResponseComplete()
+    // calls back in to pick up whatever is left in the buffer.
+    if (response_in_flight_ || client_fd_ < 0 || request_buffer_.empty()) {
+        return;
     }
+
+    HttpRequest request;
+    size_t bytes_consumed = 0;
+
+    auto result = HttpParser::parse_request(
+        request_buffer_,
+        request,
+        bytes_consumed
+    );
+
+    if (result == HttpParser::ParseResult::Success) {
+        // Complete request parsed successfully.
+        request_buffer_.erase(0, bytes_consumed);
+        // handleHttpRequest() can close and deallocate this connection on a
+        // pool-exhaustion path, so nothing may touch a member after it returns.
+        // (The old loop did exactly that, and re-read request_buffer_ on freed
+        // memory when a response failed to allocate.)
+        handleHttpRequest(request);
+        return;
+    }
+
+    if (result == HttpParser::ParseResult::Incomplete) {
+        // Need more data - wait for next read
+        return;
+    }
+
+    // BadRequest - malformed input, close connection
+    Logger::getInstance().logError("HttpConnectionJob: Malformed HTTP request, closing connection fd=" +
+                                 std::to_string(client_fd_));
+    closeConnection();
+}
+
+void HttpConnectionJob::onResponseComplete(bool keep_alive) {
+    response_in_flight_ = false;
+
+    // A close requested while the response was on the wire runs now.
+    if (close_pending_) {
+        closeConnection();
+        return;
+    }
+
+    if (!keep_alive || job_server_.isStopping()) {
+        closeConnection();
+        return;
+    }
+
+    // Pipelined requests already sitting in the buffer are answered straight
+    // away; arming an idle timer we would cancel on the next byte is pointless.
+    if (!request_buffer_.empty()) {
+        processHttpRequests();
+        return;
+    }
+
+    continueReading();
 }
 
 void HttpConnectionJob::handleHttpRequest(const HttpRequest& request) {
@@ -580,8 +625,8 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
 
         std::string file_path = response.file_path;
 
-        // Increment pending writes for the file transfer
-        pending_writes_++;
+        // Claim the connection's single response slot for the file transfer.
+        response_in_flight_ = true;
 
         auto http_file_job = HTTPFileJob::createFromPool(
             client_fd_,
@@ -590,29 +635,15 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             [this, keep_alive = keep_alive_](int fd, size_t bytes_sent) {
                 Logger::getInstance().logMessage("HttpConnectionJob: File transfer complete fd=" + 
                                                std::to_string(fd) + ", bytes=" + std::to_string(bytes_sent));
-                
-                // Decrement pending writes
-                pending_writes_--;
-                
-                // If close was pending, execute it now
-                if (close_pending_ && pending_writes_ == 0) {
-                    closeConnection();
-                    return;
-                }
-                
-                if (keep_alive && !job_server_.isStopping()) {
-                    continueReading();
-                } else {
-                    closeConnection();
-                }
+
+                onResponseComplete(keep_alive);
             },
             [this](int fd, int error) {
                 Logger::getInstance().logError("HttpConnectionJob: File transfer error fd=" + 
                                              std::to_string(fd) + ", error=" + std::to_string(error));
-                
-                // Decrement pending writes
-                pending_writes_--;
-                
+
+                // Release the response slot; the connection is going away anyway.
+                response_in_flight_ = false;
                 closeConnection();
             }
         );
@@ -626,7 +657,7 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
             Logger::getInstance().logError("[POOL_EXHAUSTED] type=HTTPFileJob capacity=" +
                 std::to_string(PoolManager::getCapacity<HTTPFileJob>()) +
                 " fd=" + std::to_string(client_fd_));
-            pending_writes_--;  // Decrement since allocation failed
+            response_in_flight_ = false;  // Release the slot since allocation failed
             closeConnection();
         }
         return;
@@ -652,40 +683,28 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
     auto response_data = std::make_unique<char[]>(response_str.size());
     std::memcpy(response_data.get(), response_str.data(), response_str.size());
 
-    // Increment pending writes BEFORE creating the WriteJob
-    pending_writes_++;
+    // Claim the connection's single response slot BEFORE creating the WriteJob.
+    response_in_flight_ = true;
     
     auto write_job = WriteJob::createFromPoolWithOwnedData(
         client_fd_,
         std::move(response_data),
         response_str.size(),
-        [this](int fd, size_t bytes_written) {
+        // keep_alive is captured by value: it is THIS request's decision. Reading
+        // the keep_alive_ member at completion time was wrong under pipelining,
+        // where a later request had already overwritten it.
+        [this, keep_alive = keep_alive_](int fd, size_t bytes_written) {
             Logger::getInstance().logMessage("HttpConnectionJob: Response sent fd=" + std::to_string(fd) + 
                                            ", bytes=" + std::to_string(bytes_written));
-            
-            // Decrement pending writes
-            pending_writes_--;
-            
-            // If close was pending, execute it now
-            if (close_pending_ && pending_writes_ == 0) {
-                closeConnection();
-                return;
-            }
-            
-            // Check if we should keep the connection alive for more requests
-            if (keep_alive_ && !job_server_.isStopping()) {
-                continueReading();
-            } else {
-                closeConnection();
-            }
+
+            onResponseComplete(keep_alive);
         },
         [this](int fd, int error) {
             Logger::getInstance().logError("HttpConnectionJob: Write error fd=" + std::to_string(fd) + 
                                          ", error=" + std::to_string(error));
-            
-            // Decrement pending writes
-            pending_writes_--;
-            
+
+            // Release the response slot; the connection is going away anyway.
+            response_in_flight_ = false;
             closeConnection();
         }
     );
@@ -701,24 +720,25 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         } else {
             Logger::getInstance().logError("HttpConnectionJob: Failed to get SQE for WriteJob");
             WriteJob::freePoolAllocated(write_job);
-            pending_writes_--;  // Decrement since job failed to submit
+            response_in_flight_ = false;  // Release the slot since the job failed to submit
             closeConnection();
         }
     } else {
         Logger::getInstance().logError("[POOL_EXHAUSTED] type=WriteJob capacity=" +
             std::to_string(PoolManager::getCapacity<WriteJob>()) +
             " fd=" + std::to_string(client_fd_));
-        pending_writes_--;  // Decrement since allocation failed
+        response_in_flight_ = false;  // Release the slot since allocation failed
         closeConnection();
     }
 }
 
 void HttpConnectionJob::closeConnection() {
-    // Defer if writes are still in flight.
-    if (pending_writes_ > 0) {
+    // Defer if a response is still on the wire. onResponseComplete() sees
+    // close_pending_ and calls back in once the socket is quiet.
+    if (response_in_flight_) {
         close_pending_ = true;
-        Logger::getInstance().logMessage("HttpConnectionJob: Close deferred, pending writes=" +
-                                         std::to_string(pending_writes_) + " fd=" + std::to_string(client_fd_));
+        Logger::getInstance().logMessage("HttpConnectionJob: Close deferred, response in flight fd=" +
+                                         std::to_string(client_fd_));
         return;
     }
 

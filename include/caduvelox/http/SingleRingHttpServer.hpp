@@ -159,7 +159,8 @@ private:
  * - Starts a ReadJob for incoming data
  * - Parses HTTP requests as data arrives
  * - Routes complete requests through HttpRouter
- * - Sends responses via WriteJob
+ * - Sends responses via WriteJob, strictly one at a time so pipelined
+ *   responses reach the client in request order
  * - Handles connection cleanup
  * 
  * Note: This class uses shared_ptr for lifetime management due to complex async
@@ -210,9 +211,16 @@ public:
 private:
 
     void startReading();
+    // Parse and dispatch AT MOST ONE buffered request. Does nothing while a
+    // response is in flight; onResponseComplete() re-enters to take the next.
+    // May deallocate this connection (pool-exhaustion path) — the caller must
+    // not touch any member after it returns.
     void processHttpRequests();
     void handleHttpRequest(const HttpRequest& request);
     void sendResponse(const HttpResponse& response);
+    // Called when the response currently on the wire has finished (or failed).
+    // `keep_alive` is that request's decision, captured at dispatch time.
+    void onResponseComplete(bool keep_alive);
     void closeConnection();
     bool shouldKeepAlive(const HttpRequest& request) const;
     void continueReading();
@@ -233,8 +241,19 @@ private:
     unsigned idle_timeout_ms_;
     bool reading_active_;
     bool keep_alive_;  // Track if connection should remain open
-    int pending_writes_;  // Track pending write operations to prevent use-after-free
-    bool close_pending_;  // Track if close was requested while writes were pending
+
+    // Response serialization (review item C6). Independent write SQEs on one
+    // socket have no execution-order guarantee: if io_uring punts one to an
+    // async worker while a later one proceeds inline, the response bytes
+    // interleave and the HTTP stream is corrupt. So this connection keeps
+    // exactly one response in flight and does not even parse the next
+    // pipelined request until the current one has been written.
+    //
+    // This also doubles as the "writes outstanding" flag closeConnection()
+    // needs, so it replaces the old pending_writes_ counter — under strict
+    // serialization that counter could only ever be 0 or 1.
+    bool response_in_flight_;
+    bool close_pending_;  // Track if close was requested while a response was in flight
 
     // Multishot recv cancellation support for deferred close during shutdown.
     MultishotRecvJob<HttpConnectionRecvHandler>* active_read_job_{nullptr};  // currently armed recv job, or nullptr
