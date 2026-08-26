@@ -6,11 +6,56 @@
 #include <liburing.h>
 #include <poll.h>
 #include <cerrno>
+#include <csignal>
 #include <cstring>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 
 namespace caduvelox {
+
+namespace {
+
+// Writing to a socket whose peer has closed raises SIGPIPE, and IORING_OP_WRITE is
+// no exception: the signal lands on whichever task issues the op, which for us is
+// the ring thread. Default disposition terminates the process outright — no log
+// line, no drain, mid-response.
+//
+// This is on the main serving path, not an edge case: WriteJob submits every HTTP
+// response through io_uring_prep_write() on a client socket. Measured on 7.1 with a
+// socketpair whose peer was closed — prep_write dies with signal 13 before the first
+// CQE is even read, while the same op with SIGPIPE ignored reports a clean -EPIPE
+// that the existing on_error_ callbacks already handle. (prep_send with MSG_NOSIGNAL
+// and pipe->socket prep_splice both report -EPIPE regardless, so WriteJob is the
+// only op in this codebase that needs the guard.)
+//
+// Installed once per process, and only over SIG_DFL: an embedding application that
+// has already chosen a SIGPIPE disposition keeps it.
+void ignoreSigPipeOnce() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        struct sigaction current{};
+        if (sigaction(SIGPIPE, nullptr, &current) != 0) {
+            Logger::getInstance().logError("Server: could not read SIGPIPE disposition: " +
+                                           std::string(strerror(errno)));
+            return;
+        }
+        if (current.sa_handler != SIG_DFL) {
+            // The host application owns this signal; leave its choice alone.
+            return;
+        }
+
+        struct sigaction ignore{};
+        ignore.sa_handler = SIG_IGN;
+        sigemptyset(&ignore.sa_mask);
+        if (sigaction(SIGPIPE, &ignore, nullptr) != 0) {
+            Logger::getInstance().logError("Server: could not ignore SIGPIPE: " +
+                                           std::string(strerror(errno)));
+        }
+    });
+}
+
+} // namespace
 
 Server::Server()
     : ring_{},
@@ -28,6 +73,9 @@ Server::~Server() {
 }
 
 bool Server::init(unsigned queue_depth, unsigned buf_count, size_t buf_size) {
+    // Before any socket write can happen. See ignoreSigPipeOnce() above.
+    ignoreSigPipeOnce();
+
     int ret = io_uring_queue_init(queue_depth, &ring_, 0);
     if (ret < 0) {
         throw std::runtime_error("Failed to initialize io_uring: " + std::string(strerror(-ret)));

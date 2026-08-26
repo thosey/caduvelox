@@ -12,6 +12,12 @@ namespace caduvelox {
  * Handles partial writes automatically by continuing until all data is sent.
  * 
  * All WriteJobs are pool-allocated for performance. Use freePoolAllocated() for manual cleanup.
+ *
+ * SIGPIPE: this job issues IORING_OP_WRITE, which -- like write(2) -- raises SIGPIPE
+ * when the fd is a socket whose peer has closed, killing the process under the default
+ * disposition. Server::init() ignores SIGPIPE once per process so the condition surfaces
+ * as a normal -EPIPE through on_error_ instead. A caller that drives a WriteJob without
+ * ever calling Server::init() is responsible for its own SIGPIPE disposition.
  */
 class WriteJob : public IoJob {
 public:

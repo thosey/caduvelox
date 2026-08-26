@@ -110,6 +110,8 @@ set(TEST_SOURCES
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp
+    # SIGPIPE must not kill the process (review item M13)
+    sigpipe_guard_test.cpp
     # Shutdown guard tests (Step 4 of SERVER_STATE_PLAN.md)
     shutdown_guard_test.cpp
     # ServerConfig / runtime configurability tests (Workstream 1)
@@ -185,6 +187,7 @@ add_test(NAME MultishotRecvRearmUnitTests COMMAND caduvelox_tests --gtest_filter
 add_test(NAME SpliceFileEofTests COMMAND caduvelox_tests --gtest_filter="SpliceFileEofTest.*")
 add_test(NAME ServerStopThreadSafetyTests COMMAND caduvelox_tests --gtest_filter="ServerStopThreadSafetyTest.*")
 add_test(NAME HttpResponseOrderingTests COMMAND caduvelox_tests --gtest_filter="HttpResponseOrderingTest.*")
+add_test(NAME SigPipeGuardTests COMMAND caduvelox_tests --gtest_filter="SigPipeGuardTest.*")
 add_test(NAME ShutdownGuardTests COMMAND caduvelox_tests --gtest_filter="ShutdownGuardTest.*")
 add_test(NAME ServerConfigTests COMMAND caduvelox_tests --gtest_filter="ServerConfigTest.*")
 
