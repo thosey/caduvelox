@@ -68,9 +68,31 @@ HttpServer::HttpServer(int num_rings, unsigned queue_depth)
 
 HttpServer::~HttpServer() {
     stop();
-    
+
+    // Join before anything is torn down. Two things depend on this, and neither is
+    // covered by member destruction order (review item L11):
+    //
+    //   1. Ring threads run completion handlers that dereference the
+    //      SingleRingHttpServer objects in http_servers_.
+    //   2. ssl_ctx_ is freed by hand right below, and a ring thread mid-handshake
+    //      is still using it.
+    //
+    // run() joins too, but only on the path where it was called and returned. A
+    // HttpServer destroyed without a completed run() -- an exception unwinding past
+    // it, a listen() that succeeded but was never run, a stop() from another thread
+    // -- would otherwise free all of this out from under live ring threads.
+    joinAllRings();
+
     if (ssl_ctx_) {
         KTLSContextHelper::freeContext(ssl_ctx_);
+    }
+}
+
+void HttpServer::joinAllRings() {
+    for (auto& ring : service_rings_) {
+        if (ring) {
+            ring->join();
+        }
     }
 }
 
@@ -175,9 +197,7 @@ void HttpServer::run() {
     Logger::getInstance().logMessage("HttpServer: All service rings started");
 
     // Wait for all service rings to finish
-    for (auto& ring : service_rings_) {
-        ring->join();
-    }
+    joinAllRings();
 
     state_.store(ServerState::Stopped, std::memory_order_release);
     
@@ -185,11 +205,25 @@ void HttpServer::run() {
 }
 
 void HttpServer::stop() {
+    // The CAS decides who *announces* the transition, not whether the shutdown work
+    // runs. It cannot gate the work, because state_ is shared: every ring's Server is
+    // bound to this same atomic (see the bindToServerState call in listen()), so any
+    // single ring calling Server::stop() already flips it to Stopping. A later
+    // HttpServer::stop() -- including the one in ~HttpServer() -- would then find the
+    // CAS failing and return without stopping the *other* rings or closing their
+    // listening sockets, leaving threads running into destruction (review item L11).
+    //
+    // Every call below is idempotent (SingleRingHttpServer::stop() and
+    // ServiceRing::stop() both guard on their own running_ flag), so running them on
+    // a second call is free.
     ServerState expected = ServerState::Running;
-    if (!state_.compare_exchange_strong(expected, ServerState::Stopping,
-                                        std::memory_order_acq_rel,
-                                        std::memory_order_acquire)) {
-        return;
+    const bool announced = state_.compare_exchange_strong(expected, ServerState::Stopping,
+                                                          std::memory_order_acq_rel,
+                                                          std::memory_order_acquire);
+
+    if (state_.load(std::memory_order_acquire) == ServerState::Stopped &&
+        service_rings_.empty()) {
+        return;  // never started; nothing to wind down
     }
 
     // Stop all HttpServers (which stops accepting)
@@ -220,7 +254,9 @@ void HttpServer::stop() {
         state_.store(ServerState::Stopped, std::memory_order_release);
     }
 
-    Logger::getInstance().logMessage("HttpServer: Server stopped");
+    if (announced) {
+        Logger::getInstance().logMessage("HttpServer: Server stopped");
+    }
 }
 
 int HttpServer::createServerSocket(int port, const std::string& bind_addr) {

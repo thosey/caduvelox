@@ -104,10 +104,20 @@ public:
 private:
     int createServerSocket(int port, const std::string& bind_addr);
 
+    // Join every started ring thread. Idempotent (ServiceRing::join() checks joinable()),
+    // so run() and ~HttpServer() can both call it.
+    void joinAllRings();
+
     ServerConfig config_;
     
-    std::vector<std::unique_ptr<ServiceRing>> service_rings_;  // One per core
+    // Declaration order matters: members are destroyed in reverse, so service_rings_
+    // must be declared *after* http_servers_. ~ServiceRing() joins its thread, and
+    // that thread's completion handlers hold raw pointers into the SingleRingHttpServer
+    // objects. Destroying http_servers_ while a ring thread is still draining is
+    // a use-after-free (review item L11). ~HttpServer() also joins explicitly so this
+    // does not rest on declaration order alone.
     std::vector<std::unique_ptr<SingleRingHttpServer>> http_servers_;    // One per service ring (internal)
+    std::vector<std::unique_ptr<ServiceRing>> service_rings_;  // One per core
     
     HttpRouter router_;  // Shared router (read-only after setup)
     

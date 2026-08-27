@@ -1,10 +1,62 @@
 #include <gtest/gtest.h>
 #include "caduvelox/http/HttpServer.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <thread>
 #include <chrono>
 
 using namespace caduvelox;
+
+namespace {
+
+// True if a plain socket can bind `port`, i.e. nothing still holds it.
+//
+// Deliberately does NOT set SO_REUSEPORT. Every ring's listening socket does set
+// it, and SO_REUSEPORT only lets sockets share a port when *all* of them opt in --
+// so while any ring listener is still open this bind fails with EADDRINUSE. That
+// is what makes it a usable probe for "were the listeners actually closed?".
+bool portIsFree(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        return false;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+
+    const bool bound = ::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+    close(fd);
+    return bound;
+}
+
+// portIsFree() with a bounded wait, because the release is not synchronous with
+// close(2) and this is not flake padding.
+//
+// startAccepting() submits a multishot IORING_OP_ACCEPT on each listening socket.
+// A submitted operation holds a kernel reference to the underlying struct file, so
+// closing the descriptor does not free the socket while that accept is still parked
+// -- and when run() was never called, nothing ever reaped it. The socket is released
+// when the ring itself is torn down by io_uring_queue_exit() in ~Server(), and that
+// teardown finishes asynchronously. Measured at one 20 ms tick on 6.x/7.x; the
+// generous bound is for loaded CI, not for hiding a leak. A genuine leak never
+// resolves and still fails.
+bool waitForPortFree(int port, std::chrono::milliseconds timeout = std::chrono::seconds(2)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (portIsFree(port)) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return portIsFree(port);
+}
+
+} // namespace
 
 class HttpServerTest : public ::testing::Test {
 protected:
@@ -160,4 +212,72 @@ TEST_F(HttpServerTest, DoubleStopIsIdempotent) {
     run_thread.join();
 
     EXPECT_EQ(server.getState(), ServerState::Stopped);
+}
+
+// --- Destruction releases listening sockets ---
+//
+// Read the scope of these honestly. They were written alongside the L11 fix
+// (~HttpServer() now joins the ring threads before freeing ssl_ctx_ and
+// http_servers_, and the member declaration order was corrected), but they do NOT
+// cover it: they pass with and without that fix, because ~SingleRingHttpServer()
+// closes its own listening fd during member destruction either way. Verified by
+// removing the destructor's stop() call and re-running -- both still passed.
+//
+// L11's actual trigger is an exception unwinding out of run()'s ring-start loop,
+// leaving started-but-unjoined threads. There is no way to produce that from the
+// public API without the fault-injection seams review item L10 asks for, so no
+// discriminating regression test exists for it yet.
+//
+// What these two do pin is worth having on its own: a destroyed HttpServer must not
+// leave listening sockets behind. Writing them also turned up something worth
+// knowing -- after a listen() that is never run(), the port stays bound for a moment
+// past the destructor. Not a leak; see waitForPortFree() above for why the kernel
+// releases it asynchronously.
+
+TEST_F(HttpServerTest, DestructorReleasesListenersWhenRunWasNeverCalled) {
+    const int test_port = 8464;
+
+    ASSERT_TRUE(portIsFree(test_port)) << "test port already in use";
+
+    {
+        HttpServer server(2, 128);
+        addBasicRoute(server);
+
+        if (!server.listenKTLS(test_port, kCertPath, kKeyPath)) {
+            GTEST_SKIP() << "KTLS not available, skipping destructor teardown test";
+        }
+
+        ASSERT_FALSE(portIsFree(test_port))
+            << "sanity check failed: the running server should be holding the port";
+    }
+
+    EXPECT_TRUE(waitForPortFree(test_port))
+        << "~HttpServer must close every ring's listening socket even though run() "
+           "was never called";
+}
+
+TEST_F(HttpServerTest, DestructorReleasesListenersAfterRunAndStop) {
+    const int test_port = 8465;
+
+    ASSERT_TRUE(portIsFree(test_port)) << "test port already in use";
+
+    {
+        HttpServer server(2, 128);
+        addBasicRoute(server);
+
+        if (!server.listenKTLS(test_port, kCertPath, kKeyPath)) {
+            GTEST_SKIP() << "KTLS not available, skipping destructor teardown test";
+        }
+
+        std::thread run_thread([&server]() { server.run(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        server.stop();
+        run_thread.join();
+
+        ASSERT_EQ(server.getState(), ServerState::Stopped);
+    }
+
+    EXPECT_TRUE(waitForPortFree(test_port))
+        << "listening sockets outlived ~HttpServer";
 }
