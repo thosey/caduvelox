@@ -91,9 +91,13 @@ TEST_F(SecurityRegressionTest, ParserRejectsChunkedEncoding) {
         << "Parser should reject unsupported chunked encoding";
 }
 
-TEST_F(SecurityRegressionTest, ParserHandlesMissingColon) {
-    // Parser is permissive - it skips headers without colon
-    // This test verifies it doesn't crash on such input
+TEST_F(SecurityRegressionTest, ParserRejectsMissingColon) {
+    // Behaviour change (review item H1). This used to assert Success: the parser
+    // skipped any line without a colon and carried on. That is the permissive
+    // half of a desync -- a recipient that instead reads the line as a header,
+    // or as the terminator of the field section, disagrees with this server
+    // about the shape of the message. A field line that is not a field is now
+    // a 400.
     std::string malformed = 
         "GET /test HTTP/1.1\r\n"
         "InvalidHeaderNoColon\r\n"
@@ -103,9 +107,9 @@ TEST_F(SecurityRegressionTest, ParserHandlesMissingColon) {
     size_t consumed = 0;
     auto result = HttpParser::parse_request(malformed, req, consumed);
     
-    // Parser succeeds by skipping the line without colon
-    EXPECT_EQ(result, HttpParser::ParseResult::Success)
-        << "Parser handles missing colon by skipping line";
+    EXPECT_EQ(result, HttpParser::ParseResult::BadRequest)
+        << "A field line with no colon must be rejected, not skipped";
+    EXPECT_EQ(consumed, 0u);
 }
 
 TEST_F(SecurityRegressionTest, ParserRejectsOversizedPartialRequest) {
