@@ -107,6 +107,8 @@ set(TEST_SOURCES
     multishot_recv_rearm_test.cpp
     multishot_recv_rearm_unit_test.cpp
     splice_file_eof_test.cpp
+    # What HTTPFileJob agrees to open and serve (review item H4)
+    http_file_job_open_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp

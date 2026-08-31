@@ -70,8 +70,25 @@ void HTTPFileJob::start(Server& server) {
 }
 
 void HTTPFileJob::openFile() {
-    // Open file for reading
-    file_fd_ = open(file_path_.c_str(), O_RDONLY);
+    // open(2) is not a "give me this file" call; it is a "do whatever this inode
+    // says" call, and for anything that is not a regular file that means
+    // something other than reading bytes.
+    //
+    // O_NONBLOCK is the load-bearing flag. Opening a FIFO for reading blocks
+    // *inside open()* until a writer arrives -- on the ring thread, which is not
+    // waiting on io_uring at that point and cannot service any of the other
+    // connections that core owns. A route that maps any part of a request onto a
+    // path can freeze a whole core that way. With the flag the open returns
+    // immediately, and the S_ISREG check below is what then refuses it.
+    //
+    // O_CLOEXEC keeps a served file out of anything this process later execs.
+    //
+    // Deliberately *not* O_NOFOLLOW: it refuses a symlink only as the final path
+    // component, so it does not stop traversal through a symlinked directory,
+    // while it does break the ordinary case of a symlinked file inside a
+    // document root. Confining paths to a root is the caller's decision -- see
+    // the weakly_canonical() check in examples/static_https_server.
+    file_fd_ = open(file_path_.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     if (file_fd_ < 0) {
         Logger::getInstance().logError("HTTPFileJob: Failed to open file: " + file_path_);
         return;
@@ -81,6 +98,23 @@ void HTTPFileJob::openFile() {
     struct stat st;
     if (fstat(file_fd_, &st) < 0) {
         Logger::getInstance().logError("HTTPFileJob: Failed to stat file: " + file_path_);
+        close(file_fd_);
+        file_fd_ = -1;
+        return;
+    }
+
+    // Only regular files can be served, and the check has to happen here --
+    // before startSendingHeaders() -- because by the time splice(2) fails there
+    // is no way left to report it. A directory opens happily and reports a
+    // plausible st_size, so without this the client gets a 200 and a
+    // Content-Length copied off the directory inode, and then the connection
+    // dies mid-body when splice returns EINVAL. Devices, sockets and FIFOs are
+    // the same shape of problem.
+    //
+    // Reported as 404 (by start(), which sees only the failed open) rather than
+    // 403, so the response does not confirm what is on disk.
+    if (!S_ISREG(st.st_mode)) {
+        Logger::getInstance().logError("HTTPFileJob: Not a regular file, refusing to serve: " + file_path_);
         close(file_fd_);
         file_fd_ = -1;
         return;
