@@ -709,27 +709,22 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
         }
     );
 
-    if (write_job) {
-        Logger::getInstance().logMessage("HttpConnectionJob: WriteJob allocated, registering...");
-        // Register and prepare the write job
-        struct io_uring_sqe* sqe = job_server_.registerJob(write_job);
-        if (sqe) {
-            write_job->prepareSqe(sqe);
-            job_server_.submit();
-            Logger::getInstance().logMessage("HttpConnectionJob: WriteJob registered and submitted");
-        } else {
-            Logger::getInstance().logError("HttpConnectionJob: Failed to get SQE for WriteJob");
-            WriteJob::freePoolAllocated(write_job);
-            response_in_flight_ = false;  // Release the slot since the job failed to submit
-            closeConnection();
-        }
-    } else {
+    if (!write_job) {
         Logger::getInstance().logError("[POOL_EXHAUSTED] type=WriteJob capacity=" +
             std::to_string(PoolManager::getCapacity<WriteJob>()) +
             " fd=" + std::to_string(client_fd_));
         response_in_flight_ = false;  // Release the slot since allocation failed
         closeConnection();
+        return;
     }
+
+    // start() owns write_job from here: it either queues the write or frees the
+    // job and runs the error callback above, which releases the response slot
+    // and closes the connection -- the same teardown this branch used to
+    // open-code. It also retries after flushing a full submission queue, which
+    // the open-coded version did not. This connection may be gone on return.
+    Logger::getInstance().logMessage("HttpConnectionJob: WriteJob allocated, submitting...");
+    write_job->start(job_server_);
 }
 
 void HttpConnectionJob::closeConnection() {

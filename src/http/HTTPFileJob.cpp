@@ -229,22 +229,30 @@ void HTTPFileJob::startSendingHeaders(Server& server) {
         }
     );
     
-    if (write_job) {
-        // Register and start the write job
-        Logger::getInstance().logMessage("HTTPFileJob: Registering WriteJob for headers");
-        struct io_uring_sqe* sqe = server.registerJob(write_job);
-        if (sqe) {
-            write_job->prepareSqe(sqe);
-            int submitted = server.submit();
-            Logger::getInstance().logMessage("HTTPFileJob: WriteJob registered and submitted, count=" + std::to_string(submitted));
-        } else {
-            Logger::getInstance().logError("HTTPFileJob: Failed to get SQE for WriteJob");
-            sendError(server, 500, "Internal Server Error");
-        }
-    } else {
+    if (!write_job) {
         Logger::getInstance().logError("HTTPFileJob: Failed to allocate WriteJob from pool");
         sendError(server, 500, "Internal Server Error");
+        return;
     }
+
+    // Hand the job to start() rather than driving the ring here. This used to be
+    // an open-coded copy of WriteJob::submitWrite() that asked for one SQE and,
+    // if the ring had none to give, dropped the job on the floor -- nothing was
+    // queued, so no completion ever came to free it and the pool slot was lost
+    // for good.
+    //
+    // It also gave up where submitWrite() retries. A full submission queue is
+    // transient; flushing it frees every slot at once, so the request now
+    // survives a momentary shortage instead of failing.
+    //
+    // start() owns write_job from here, and on the failing path it runs the
+    // error callback above -- which closes file_fd_ and deallocates this job.
+    // Neither pointer may be touched afterwards. Nothing is attempted for a 500
+    // in that case: producing one needs the very SQE that could not be had, so
+    // sendError() would allocate a second WriteJob only to land in its own
+    // failure branch and tear down exactly the same way.
+    Logger::getInstance().logMessage("HTTPFileJob: Submitting WriteJob for headers");
+    write_job->start(server);
 }
 
 void HTTPFileJob::startSendingFile(Server& server) {
@@ -340,28 +348,19 @@ void HTTPFileJob::sendError(Server& server, int status_code, const std::string& 
         }
     );
     
-    if (write_job) {
-        // Register and start the write job  
-        struct io_uring_sqe* sqe = server.registerJob(write_job);
-        if (sqe) {
-            write_job->prepareSqe(sqe);
-            server.submit();
-        } else {
-            Logger::getInstance().logError("HTTPFileJob: Failed to get SQE for error WriteJob");
-            // Failed to get SQE - free the write job and this job
-            WriteJob::freePoolAllocated(write_job);
-            if (on_error_) {
-                on_error_(client_fd_, ENOMEM);
-            }
-            PoolManager::deallocate<HTTPFileJob>(this);
-        }
-    } else {
+    if (!write_job) {
         Logger::getInstance().logError("HTTPFileJob: Failed to allocate error WriteJob from pool");
         if (on_error_) {
             on_error_(client_fd_, ENOMEM);
         }
         PoolManager::deallocate<HTTPFileJob>(this);
+        return;
     }
+
+    // As in startSendingHeaders(): start() owns the job, and its error callback
+    // above already performs the teardown the open-coded failure branch used to
+    // duplicate. This job may be gone once start() returns.
+    write_job->start(server);
 }
 
 } // namespace caduvelox

@@ -93,13 +93,14 @@ std::optional<IoJob::CleanupCallback> WriteJob::handleCompletion(Server& server,
         return cleanupWriteJob;
     }
     
-    // Partial write - continue with remaining data
-    resubmitWrite(server);
+    // Partial write - continue with remaining data. submitWrite() owns the job
+    // from here (it may free it), so nothing below may touch a member.
+    submitWrite(server, "a resubmission after a partial write");
     return std::nullopt; // Continue with resubmitted job
 }
 
 void WriteJob::start(Server& server) {
-    submitWrite(server);
+    submitWrite(server, "the initial submission");
 }
 
 void WriteJob::prepareSqe(struct io_uring_sqe* sqe) {
@@ -108,56 +109,69 @@ void WriteJob::prepareSqe(struct io_uring_sqe* sqe) {
     io_uring_prep_write(sqe, fd_, remaining_data, remaining_length, 0);
 }
 
-void WriteJob::submitWrite(Server& server) {
-    struct io_uring_sqe* sqe = server.registerJob(this);
-    if (!sqe) {
-        int flush_ret = server.submit();
-        if (flush_ret < 0) {
-            Logger::getInstance().logError("WriteJob: Failed to flush pending submissions: error=" + std::to_string(-flush_ret));
-            if (on_error_) {
-                on_error_(fd_, -flush_ret);
-            }
-            return;
-        }
+/**
+ * Nothing was queued, so no completion will ever arrive and nobody downstream
+ * will ever free this job. Free it here or the pool slot is gone for the life
+ * of the process.
+ *
+ * The order matters: deallocate first, notify second. The error callback is
+ * where a parent job tears itself down -- HTTPFileJob deallocates itself,
+ * HttpConnectionJob closes the connection -- and running that while this job is
+ * still alive means a callback can reach back into an object that is about to
+ * disappear. Moving the callback out before the free keeps it valid across the
+ * deallocation.
+ */
+void WriteJob::abandon(const std::string& message, int error) {
+    Logger::getInstance().logError(message + ": error=" + std::to_string(error));
 
-        sqe = server.registerJob(this);
-        if (!sqe) {
-            Logger::getInstance().logError("WriteJob: Unable to acquire SQE for initial submission");
-            if (on_error_) {
-                on_error_(fd_, EAGAIN);
-            }
-            return;
-        }
-    }
+    ErrorCallback on_error = std::move(on_error_);
+    const int fd = fd_;
+    PoolManager::deallocate<WriteJob>(this);
 
-    prepareSqe(sqe);
-    int ret = server.submit();
-    if (ret < 0) {
-        Logger::getInstance().logError("WriteJob: io_uring_submit failed: error=" + std::to_string(-ret));
-        if (on_error_) {
-            on_error_(fd_, -ret);
-        }
+    if (on_error) {
+        on_error(fd, error);
     }
 }
 
-void WriteJob::resubmitWrite(Server& server) {
+/**
+ * Two different things can go wrong here, and they need opposite treatment --
+ * which is why "free the job on every failure path" is not the fix it looks
+ * like.
+ *
+ *   1. No SQE could be acquired. registerJob() returned nullptr, so nothing was
+ *      queued and the server's in-flight count was never incremented. The job
+ *      is dead: abandon() frees it. A full submission queue is transient, so
+ *      this only happens after a flush has failed to free a slot.
+ *
+ *   2. io_uring_submit() failed after the SQE was filled in. This one must NOT
+ *      free. liburing publishes queued entries to the shared ring -- it
+ *      advances the tail -- *before* the io_uring_enter() that failed, so the
+ *      entry is still there with this job's address in user_data, and the next
+ *      submit() from anywhere in the process hands it to the kernel. Measured
+ *      on 7.1, and pinned by WriteJobSubmitSemantics.FailedSubmitLeavesTheEntryQueued:
+ *      a submit forced to fail left the tail advanced, and a later bare submit()
+ *      -- preparing nothing new -- produced the completion carrying the original
+ *      user_data. Freeing here would turn a leak into a use-after-free.
+ *
+ * Case 2 is not reported through on_error_ either. The operation is still live
+ * and a completion is still coming; telling the caller it failed is precisely
+ * what lets a parent tear itself down while its child is in flight.
+ */
+void WriteJob::submitWrite(Server& server, const char* what) {
     struct io_uring_sqe* sqe = server.registerJob(this);
     if (!sqe) {
+        // The submission queue is full. Flushing it frees every slot at once,
+        // so a momentary shortage should not fail the write.
         int flush_ret = server.submit();
         if (flush_ret < 0) {
-            Logger::getInstance().logError("WriteJob: Failed to flush pending submissions during resubmit: error=" + std::to_string(-flush_ret));
-            if (on_error_) {
-                on_error_(fd_, -flush_ret);
-            }
+            abandon(std::string("WriteJob: failed to flush the submission queue before ") + what,
+                    -flush_ret);
             return;
         }
 
         sqe = server.registerJob(this);
         if (!sqe) {
-            Logger::getInstance().logError("WriteJob: Unable to acquire SQE for resubmission");
-            if (on_error_) {
-                on_error_(fd_, EAGAIN);
-            }
+            abandon(std::string("WriteJob: no SQE available for ") + what, EAGAIN);
             return;
         }
     }
@@ -165,10 +179,11 @@ void WriteJob::resubmitWrite(Server& server) {
     prepareSqe(sqe);
     int ret = server.submit();
     if (ret < 0) {
-        Logger::getInstance().logError("WriteJob: io_uring_submit failed on resubmit: error=" + std::to_string(-ret));
-        if (on_error_) {
-            on_error_(fd_, -ret);
-        }
+        // Case 2 above: queued, but not yet handed to the kernel. Not ours to free.
+        Logger::getInstance().logError(
+            std::string("WriteJob: io_uring_submit failed during ") + what +
+            ": error=" + std::to_string(-ret) +
+            "; the operation stays queued for the next submit");
     }
 }
 

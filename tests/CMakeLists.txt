@@ -109,6 +109,8 @@ set(TEST_SOURCES
     splice_file_eof_test.cpp
     # What HTTPFileJob agrees to open and serve (review item H4)
     http_file_job_open_test.cpp
+    # Who frees a job when submission fails (review items H2, H3)
+    write_job_ownership_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp

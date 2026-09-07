@@ -11,7 +11,9 @@ namespace caduvelox {
  * Job for writing data to a file descriptor.
  * Handles partial writes automatically by continuing until all data is sent.
  * 
- * All WriteJobs are pool-allocated for performance. Use freePoolAllocated() for manual cleanup.
+ * All WriteJobs are pool-allocated for performance. Once start() has been called
+ * the job owns itself and frees itself; freePoolAllocated() is only for a job
+ * that was created and then never started.
  *
  * SIGPIPE: this job issues IORING_OP_WRITE, which -- like write(2) -- raises SIGPIPE
  * when the fd is a socket whose peer has closed, killing the process under the default
@@ -63,7 +65,11 @@ public:
                                               ErrorCallback on_error = nullptr);
 
     /**
-     * Free a pool-allocated WriteJob.
+     * Free a WriteJob that was created but never started.
+     *
+     * Only valid in that window. After start() the job frees itself on every
+     * path -- see the ownership note there -- so calling this on a started job
+     * is a double free.
      * @param job Pointer to pool-allocated job
      */
     static void freePoolAllocated(WriteJob* job);
@@ -73,14 +79,26 @@ public:
 
     std::optional<CleanupCallback> handleCompletion(Server& server, struct io_uring_cqe* cqe) override;
 
-    // Start the job (submit initial operation)
+    /**
+     * Submit the write.
+     *
+     * Ownership passes to this call. On return the job is either queued with
+     * the kernel -- in which case handleCompletion() will free it -- or it has
+     * already been deallocated and its error callback run. The caller must not
+     * touch the pointer afterwards, and must not free it: doing so is a double
+     * free, and not doing so is not a leak.
+     */
     void start(Server& server);
 
     WriteJob(int fd, bool owns_data);
 
 private:
-    void submitWrite(Server& server);
-    void resubmitWrite(Server& server);  // For internal re-submission when already managed
+    // `what` names the attempt in log lines; the initial submission and the
+    // resubmission of a partial write differ in nothing else.
+    void submitWrite(Server& server, const char* what);
+
+    // Give up on a job that was never queued: free it, then notify.
+    void abandon(const std::string& message, int error);
 
     int fd_;
     bool owns_data_;
