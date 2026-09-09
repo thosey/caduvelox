@@ -119,6 +119,22 @@ TEST_F(HttpParserUnitTest, RejectsOversizeHeaderLine) {
     EXPECT_EQ(HttpParser::parse_request(request, req, consumed), PR::BadRequest);
 }
 
+// ---------------------------------------------------------------------------
+// Transfer-Encoding (review item H7)
+//
+// This server implements no transfer codings at all, so any request carrying
+// the field is one it cannot frame. RFC 9112 section 6.1 also requires chunked
+// to be the final coding applied to a request, which makes a lone
+// "Transfer-Encoding: gzip" malformed in its own right.
+//
+// The parser used to reject only values containing "chunked" -- the classic
+// CL.TE desync -- and store anything else. Storing it is the problem: nothing
+// in this server ever reads the field, so the body was framed by
+// Content-Length while a front end that honoured the coding framed it
+// differently. That disagreement is the whole desync, and chunked is only its
+// best-known instance.
+// ---------------------------------------------------------------------------
+
 TEST_F(HttpParserUnitTest, RejectsChunkedTransferEncoding) {
     std::string request =
         "POST /data HTTP/1.1\r\n"
@@ -128,15 +144,81 @@ TEST_F(HttpParserUnitTest, RejectsChunkedTransferEncoding) {
     EXPECT_EQ(HttpParser::parse_request(request, req, consumed), PR::BadRequest);
 }
 
-TEST_F(HttpParserUnitTest, AcceptsOtherTransferEncodings) {
+// Behaviour change: this was AcceptsOtherTransferEncodings, which asserted that
+// a non-chunked coding parsed successfully and kept its value.
+TEST_F(HttpParserUnitTest, RejectsOtherTransferEncodings) {
     std::string request =
         "POST /data HTTP/1.1\r\n"
         "Transfer-Encoding: gzip\r\n"
         "Content-Length: 0\r\n"
         "\r\n";
 
+    EXPECT_EQ(HttpParser::parse_request(request, req, consumed), PR::BadRequest)
+        << "a transfer coding this server cannot apply leaves the body framed "
+           "by Content-Length here and by the coding upstream";
+}
+
+// The framing disagreement itself, with a body to disagree about: a front end
+// honouring the coding reads the body one way, this server reads five bytes.
+TEST_F(HttpParserUnitTest, RejectsTransferEncodingCombinedWithContentLength) {
+    std::string request =
+        "POST /data HTTP/1.1\r\n"
+        "Host: example.com\r\n"
+        "Transfer-Encoding: gzip\r\n"
+        "Content-Length: 5\r\n"
+        "\r\n"
+        "helloGET /admin HTTP/1.1\r\n"
+        "\r\n";
+
+    EXPECT_EQ(HttpParser::parse_request(request, req, consumed), PR::BadRequest)
+        << "whatever the two ends disagree about becomes the head of the next "
+           "request for one of them, and the attacker writes that request";
+}
+
+// RFC 9112 section 6.1: identity is not a transfer coding a request may carry.
+TEST_F(HttpParserUnitTest, RejectsIdentityTransferEncoding) {
+    std::string request =
+        "POST /data HTTP/1.1\r\n"
+        "Transfer-Encoding: identity\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+
+    EXPECT_EQ(HttpParser::parse_request(request, req, consumed), PR::BadRequest);
+}
+
+// An empty value used to slip through: there is no "chunked" in "" to find.
+TEST_F(HttpParserUnitTest, RejectsEmptyTransferEncoding) {
+    std::string request =
+        "POST /data HTTP/1.1\r\n"
+        "Transfer-Encoding: \r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+
+    EXPECT_EQ(HttpParser::parse_request(request, req, consumed), PR::BadRequest);
+}
+
+// Guard: the field is matched by name, not by substring. A header that merely
+// contains the name is an ordinary header and must still be accepted.
+TEST_F(HttpParserUnitTest, DoesNotRejectHeadersNamedAfterTransferEncoding) {
+    std::string request =
+        "GET / HTTP/1.1\r\n"
+        "X-Transfer-Encoding: gzip\r\n"
+        "\r\n";
+
     ASSERT_EQ(HttpParser::parse_request(request, req, consumed), PR::Success);
-    EXPECT_EQ(req.headers.at("transfer-encoding"), "gzip");
+    EXPECT_EQ(req.headers.at("x-transfer-encoding"), "gzip");
+}
+
+// Guard: TE is a different field (RFC 9110 section 10.1.4) -- it advertises what
+// codings the client would accept in the response, and frames nothing.
+TEST_F(HttpParserUnitTest, StillAcceptsTheTeHeader) {
+    std::string request =
+        "GET / HTTP/1.1\r\n"
+        "TE: gzip\r\n"
+        "\r\n";
+
+    ASSERT_EQ(HttpParser::parse_request(request, req, consumed), PR::Success);
+    EXPECT_EQ(req.headers.at("te"), "gzip");
 }
 
 TEST_F(HttpParserUnitTest, HandlesEmptyBody) {

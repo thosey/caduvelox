@@ -158,14 +158,28 @@ bool HttpParser::parse_headers(std::string_view headers_section, HttpRequest& ou
         std::string name = normalize_header_name(raw_name);
         std::string value = trim_header_value(raw_value);
 
-        // Reject Transfer-Encoding: chunked (not supported by minimal parser)
+        // RFC 9112 section 6.1: a request carrying Transfer-Encoding is one whose
+        // body is framed by the coding rather than by Content-Length. This
+        // server implements no transfer codings, so there is no value here it
+        // can honour -- which makes the whole field a 400 rather than a value to
+        // inspect.
+        //
+        // This used to reject only values containing "chunked" and store
+        // everything else. Two problems with that. Nothing in this server ever
+        // reads the stored field, so a "Transfer-Encoding: gzip" request was
+        // framed here by Content-Length while a front end that honoured the
+        // coding framed it by the coding -- and where the two disagree, the tail
+        // of one request becomes the head of the next, chosen by whoever sent
+        // it. Chunked is the best-known instance of that disagreement, not the
+        // only one. Second, "chunked" was matched as a substring of the raw
+        // value, which is token matching by accident; rejecting the field
+        // outright retires the question instead of elaborating the match.
+        //
+        // Matched by exact field name, so an ordinary header that merely
+        // contains the name (X-Transfer-Encoding) is unaffected, as is TE, which
+        // is a different field and frames nothing.
         if (name == "transfer-encoding") {
-            std::string lv = value;
-            std::transform(lv.begin(), lv.end(), lv.begin(),
-                [](unsigned char c){ return std::tolower(c); });
-            if (lv.find("chunked") != std::string::npos) {
-                return false;
-            }
+            return false;
         }
 
         // try_emplace leaves both arguments untouched when it does not insert,
