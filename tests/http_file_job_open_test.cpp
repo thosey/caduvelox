@@ -307,4 +307,10 @@ TEST_F(HttpFileJobOpenTest, MissingFileIsStillNotFound) {
 
     const std::string sent = clientBytes();
     EXPECT_NE(sent.find("HTTP/1.1 404"), std::string::npos) << sent;
+
+    // An error response that reached the socket intact reports as delivered,
+    // not failed (review item M11). The connection-level consequence of getting
+    // this backwards is in file_error_keepalive_test.
+    EXPECT_TRUE(completed_) << "a fully written 404 is a delivered response";
+    EXPECT_FALSE(errored_) << "reporting it as an error is what closed the connection";
 }

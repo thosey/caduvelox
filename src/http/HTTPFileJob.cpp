@@ -318,6 +318,15 @@ void HTTPFileJob::sendError(Server& server, int status_code, const std::string& 
     error_response.setStatus(status_code, message);
     error_response.headers["content-type"] = "text/plain";
     error_response.headers["content-length"] = std::to_string(message.length());
+
+    // Carry the caller's connection disposition across. response_ is built by
+    // the connection, which sets "connection: close" exactly when it intends to
+    // close after this response; this reply is a fresh HttpResponse and would
+    // otherwise drop it, leaving an HTTP/1.1 client to assume the connection
+    // persists right up until it does not.
+    if (auto it = response_.headers.find("connection"); it != response_.headers.end()) {
+        error_response.headers["connection"] = it->second;
+    }
     
     std::ostringstream oss;
     oss << "HTTP/1.1 " << error_response.status_code << " " << error_response.status_text << "\r\n";
@@ -334,9 +343,23 @@ void HTTPFileJob::sendError(Server& server, int status_code, const std::string& 
         client_fd_,
         std::move(response_data),
         response_str.size(),
+        // An error response that reached the socket intact is a delivered
+        // response, so it completes rather than fails.
+        //
+        // This used to report through on_error_ with an error code of 0, meaning
+        // "handled" -- but nothing downstream reads the code, and the
+        // connection's error callback closes the connection whatever it says. So
+        // every 404 tore down a connection whose response had gone out in full.
+        // A missing file is an ordinary answer to an ordinary request; the
+        // client that paid for it was the one doing what HTTP/1.1 asks, reusing
+        // a connection across resources that do not all exist.
+        //
+        // The mid-transfer failures still report as errors, and must: by then
+        // headers and a Content-Length are on the wire, and the connection is
+        // the only thing left that can signal the truncation.
         [this](int fd, size_t bytes_written) {
-            if (on_error_) {
-                on_error_(client_fd_, 0); // Indicate error was handled
+            if (on_complete_) {
+                on_complete_(client_fd_, bytes_written);
             }
             PoolManager::deallocate<HTTPFileJob>(this);
         },
