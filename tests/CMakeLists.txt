@@ -113,6 +113,9 @@ set(TEST_SOURCES
     write_job_ownership_test.cpp
     # A delivered error response must not kill keep-alive (review item M11)
     file_error_keepalive_test.cpp
+    # What a handler can make the server put on the wire (review item M7)
+    response_header_framing_test.cpp
+    response_head_writer_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp

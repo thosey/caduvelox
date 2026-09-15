@@ -49,6 +49,7 @@ add_library(caduvelox
     # HTTP layer (server, routing, file serving)
     src/http/HttpParser.cpp
     src/http/HttpRouter.cpp
+    src/http/HttpResponseWriter.cpp     # The one place a response head becomes bytes
     src/http/HttpServer.cpp             # Multi-ring coordinator (public API)
     src/http/SingleRingHttpServer.cpp   # Internal single-ring implementation
     src/http/HttpConnectionRecvHandler.cpp

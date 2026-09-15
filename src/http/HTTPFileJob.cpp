@@ -1,4 +1,5 @@
 #include "caduvelox/http/HTTPFileJob.hpp"
+#include "caduvelox/http/HttpResponseWriter.hpp"
 #include "caduvelox/Server.hpp"
 #include "caduvelox/jobs/WriteJob.hpp"
 #include "caduvelox/jobs/SpliceFileJob.hpp"
@@ -146,18 +147,27 @@ void HTTPFileJob::openFile() {
 
 void HTTPFileJob::startSendingHeaders(Server& server) {
     state_ = SendingHeaders;
+
+    // The response may come straight from a handler, with header names in any
+    // case. Fold them before the defaults below look for them, or a handler's
+    // "Content-Type" is missed and a guessed one is sent beside it.
+    if (!response_.normalizeHeaders()) {
+        Logger::getInstance().logError("HTTPFileJob: conflicting header values in response for " + file_path_);
+        sendError(server, 500, "Internal Server Error");
+        return;
+    }
     
     // Set appropriate status code
     if (offset_ > 0 || length_ < file_size_) {
         response_.setStatus(206, "Partial Content");
-        response_.headers["Content-Range"] = "bytes " + std::to_string(offset_) + "-" + 
+        response_.headers["content-range"] = "bytes " + std::to_string(offset_) + "-" + 
                                            std::to_string(offset_ + length_ - 1) + "/" + std::to_string(file_size_);
     } else {
         response_.setStatus(200, "OK");
     }
-    
-    // Set Content-Length
-    response_.headers["content-length"] = std::to_string(length_);
+
+    // Content-Length is not set here: build_response_head() writes it from
+    // length_, the number of bytes the splice will actually send.
     
     // Try to determine Content-Type from file extension
     if (response_.headers.find("content-type") == response_.headers.end()) {
@@ -187,17 +197,14 @@ void HTTPFileJob::startSendingHeaders(Server& server) {
         response_.headers["access-control-allow-origin"] = "*";
     }
     
-    // Build HTTP response headers
-    std::ostringstream oss;
-    oss << "HTTP/1.1 " << response_.status_code << " " << response_.status_text << "\r\n";
-    
-    for (const auto& [key, value] : response_.headers) {
-        oss << key << ": " << value << "\r\n";
+    // Build HTTP response headers. Refusal happens here, before anything is on
+    // the wire, so it can still be reported as a status code.
+    std::string header_str;
+    if (!build_response_head(response_, length_, header_str)) {
+        Logger::getInstance().logError("HTTPFileJob: response head cannot be written safely for " + file_path_);
+        sendError(server, 500, "Internal Server Error");
+        return;
     }
-    
-    oss << "\r\n"; // End of headers
-    
-    std::string header_str = oss.str();
     header_size_ = header_str.size();
     
     // Create owned data for WriteJob
@@ -317,7 +324,9 @@ void HTTPFileJob::sendError(Server& server, int status_code, const std::string& 
     HttpResponse error_response;
     error_response.setStatus(status_code, message);
     error_response.headers["content-type"] = "text/plain";
-    error_response.headers["content-length"] = std::to_string(message.length());
+
+    // start() can get here before startSendingHeaders() has normalized anything.
+    response_.normalizeHeaders();
 
     // Carry the caller's connection disposition across. response_ is built by
     // the connection, which sets "connection: close" exactly when it intends to
@@ -328,14 +337,14 @@ void HTTPFileJob::sendError(Server& server, int status_code, const std::string& 
         error_response.headers["connection"] = it->second;
     }
     
-    std::ostringstream oss;
-    oss << "HTTP/1.1 " << error_response.status_code << " " << error_response.status_text << "\r\n";
-    for (const auto& [key, value] : error_response.headers) {
-        oss << key << ": " << value << "\r\n";
+    std::string response_str;
+    if (build_response_head(error_response, message.size(), response_str)) {
+        response_str += message;
+    } else {
+        // Only the copied connection value can fail here; everything else is a
+        // literal. Honour the close the connection asked for, if it did.
+        response_str = fallback_error_response(response_.getHeader("connection") == "close");
     }
-    oss << "\r\n" << message;
-    
-    std::string response_str = oss.str();
     auto response_data = std::make_unique<char[]>(response_str.size());
     std::memcpy(response_data.get(), response_str.data(), response_str.size());
     

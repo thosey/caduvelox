@@ -29,10 +29,44 @@ struct HttpResponse {
     }
 
     void setHeader(const std::string &name, const std::string &value) {
-        std::string key = name;
-        std::transform(key.begin(), key.end(), key.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
+        const std::string key = lowercase(name);
+        // Drop any other spelling of this field written straight into the map,
+        // or this would add a second copy of the field instead of replacing it.
+        for (auto it = headers.begin(); it != headers.end();) {
+            if (it->first != key && lowercase(it->first) == key) {
+                it = headers.erase(it);
+            } else {
+                ++it;
+            }
+        }
         headers[key] = value;
+    }
+
+    /**
+     * Fold every header name to lowercase in place.
+     *
+     * headers is a public map, and a handler can write "Content-Type" into it
+     * directly. Anything that then looks for "content-type" misses it and adds a
+     * default alongside -- so this has to run before defaults are filled in,
+     * which is where the router and HTTPFileJob call it.
+     *
+     * @return false if two spellings of one field carried different values. The
+     *         first one seen is kept, but the response should not be sent.
+     */
+    bool normalizeHeaders() {
+        std::unordered_map<std::string, std::string> normalized;
+        normalized.reserve(headers.size());
+        bool consistent = true;
+        for (auto &[name, value] : headers) {
+            // try_emplace leaves `value` untouched when it does not insert, so it
+            // is still readable for the comparison.
+            auto [it, inserted] = normalized.try_emplace(lowercase(name), std::move(value));
+            if (!inserted && it->second != value) {
+                consistent = false;
+            }
+        }
+        headers = std::move(normalized);
+        return consistent;
     }
 
     void setContentType(const std::string &content_type) {
@@ -67,6 +101,13 @@ struct HttpResponse {
     }
 
 private:
+    static std::string lowercase(const std::string &s) {
+        std::string out = s;
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return out;
+    }
+
     static std::string getDefaultStatusText(int code) {
         switch (code) {
             case 200: return "OK";

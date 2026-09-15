@@ -106,6 +106,18 @@ void HttpRouter::dispatch(const HttpRequest& req, HttpResponse& res) const {
                 res.setStatus(500, "Internal Server Error"); 
                 res.setBody("Internal Server Error"); 
             }
+
+            // Handlers may write the header map directly, in any case. Fold the
+            // names *before* the defaults below look for them: otherwise a
+            // handler's "Content-Type" is missed and a second, default one is
+            // added beside it, and both reach the wire.
+            if (!res.normalizeHeaders()) {
+                // Two spellings of one field with different values -- there is no
+                // honest way to pick, so the handler's response is not sent.
+                res = HttpResponse{};
+                res.setStatus(500, "Internal Server Error");
+                res.setBody("Internal Server Error");
+            }
             
             fallback_to_default_headers(res);
             return;

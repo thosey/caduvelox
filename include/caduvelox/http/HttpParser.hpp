@@ -36,6 +36,17 @@ class HttpParser {
     // control characters. See the note above parse_headers() in the .cpp.
     static ParseResult parse_request(std::string_view buf, HttpRequest& out, size_t& consumed);
 
+    // RFC 9110 field-name = token. Rejects the empty name, leading whitespace
+    // (obs-fold continuation lines), and whitespace before the colon.
+    //
+    // Public because responses are held to the same field syntax on the way out
+    // (see HttpResponseWriter.hpp): one set of rules, not a second copy of them.
+    static bool is_valid_field_name(std::string_view name);
+
+    // RFC 9110 field-value: visible characters, obs-text, plus interior SP/HTAB.
+    // The point is to reject embedded CR/LF and other control characters.
+    static bool is_valid_field_value(std::string_view value);
+
   private:
     static bool parse_request_line(std::string_view line, HttpRequest& out);
     static bool parse_headers(std::string_view headers_section, HttpRequest& out);
@@ -47,13 +58,6 @@ class HttpParser {
     // MAX_CONTENT_LENGTH.
     static bool parse_content_length(std::string_view value, size_t& out);
 
-    // RFC 9110 field-name = token. Rejects the empty name, leading whitespace
-    // (obs-fold continuation lines), and whitespace before the colon.
-    static bool is_valid_field_name(std::string_view name);
-
-    // RFC 9110 field-value: visible characters, obs-text, plus interior SP/HTAB.
-    // The point is to reject embedded CR/LF and other control characters.
-    static bool is_valid_field_value(std::string_view value);
 };
 
 } // namespace caduvelox

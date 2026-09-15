@@ -1,5 +1,6 @@
 #include "caduvelox/http/SingleRingHttpServer.hpp"
 #include "caduvelox/http/HTTPFileJob.hpp"
+#include "caduvelox/http/HttpResponseWriter.hpp"
 #include "caduvelox/jobs/KTLSJob.hpp"
 #include "caduvelox/jobs/KTLSContextHelper.hpp"
 #include "caduvelox/jobs/MultishotRecvJob.hpp"
@@ -664,20 +665,21 @@ void HttpConnectionJob::sendResponse(const HttpResponse& response) {
     }
     
     // Regular response - use WriteJob
-    std::ostringstream oss;
-    oss << "HTTP/1.1 " << response.status_code << " " << response.status_text << "\r\n";
-
-    // Add headers
-    bool hasCL = response.headers.find("content-length") != response.headers.end();
-    for (const auto &[k, v] : response.headers) {
-        oss << k << ": " << v << "\r\n";
+    //
+    // build_response_head() is the one place a response head becomes bytes (see
+    // HttpResponseWriter.hpp). This used to write the map verbatim and add its own
+    // Content-Length only when an exact-case "content-length" key was missing --
+    // so a handler's "Content-Length" went out alongside a second one, and a
+    // correctly-cased one went out even when it did not match the body.
+    std::string response_str;
+    if (build_response_head(response, response.body.size(), response_str)) {
+        response_str += response.body;
+    } else {
+        Logger::getInstance().logError(
+            "HttpConnectionJob: response cannot be written safely, sending 500 fd=" +
+            std::to_string(client_fd_));
+        response_str = fallback_error_response(!keep_alive_);
     }
-    if (!hasCL) {
-        oss << "Content-Length: " << response.body.size() << "\r\n";
-    }
-    oss << "\r\n" << response.body;
-    
-    std::string response_str = oss.str();
     
     // Create owned data for WriteJob
     auto response_data = std::make_unique<char[]>(response_str.size());
