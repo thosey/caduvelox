@@ -544,3 +544,58 @@ TEST_F(HttpParserUnitTest, AcceptsSupportedHttpVersions) {
         EXPECT_EQ(req.version, version);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Connection options (review item M8)
+//
+// Connection is a comma-separated list (RFC 9110 section 7.6.1), and a repeated
+// list field is one list. The connection's keep-alive decision matches options
+// in it as whole, case-insensitive tokens.
+// ---------------------------------------------------------------------------
+
+TEST(HttpParserListTokens, MatchesWholeTokensAnywhereInTheList) {
+    EXPECT_TRUE(HttpParser::list_contains_token("close", "close"));
+    EXPECT_TRUE(HttpParser::list_contains_token("close, TE", "close"));
+    EXPECT_TRUE(HttpParser::list_contains_token("TE, close", "close"));
+    EXPECT_TRUE(HttpParser::list_contains_token("TE ,\tClose ", "close"));
+    EXPECT_TRUE(HttpParser::list_contains_token("KEEP-ALIVE", "keep-alive"));
+}
+
+TEST(HttpParserListTokens, ToleratesEmptyElements) {
+    EXPECT_TRUE(HttpParser::list_contains_token(", ,close,", "close"));
+    EXPECT_FALSE(HttpParser::list_contains_token("", "close"));
+    EXPECT_FALSE(HttpParser::list_contains_token(" , ,", "close"));
+}
+
+TEST(HttpParserListTokens, DoesNotMatchSubstrings) {
+    EXPECT_FALSE(HttpParser::list_contains_token("closed", "close"));
+    EXPECT_FALSE(HttpParser::list_contains_token("x-close", "close"));
+    EXPECT_FALSE(HttpParser::list_contains_token("close-ish, keep-alive", "close"));
+    EXPECT_FALSE(HttpParser::list_contains_token("clo se", "close"));
+}
+
+TEST_F(HttpParserUnitTest, RepeatedConnectionFieldsFormOneList) {
+    std::string request =
+        "GET / HTTP/1.1\r\n"
+        "Connection: close\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
+
+    ASSERT_EQ(HttpParser::parse_request(request, req, consumed), PR::Success);
+    EXPECT_EQ(req.headers.at("connection"), "close, keep-alive")
+        << "last-wins dropped the close on the earlier line";
+    EXPECT_TRUE(HttpParser::list_contains_token(req.headers.at("connection"), "close"));
+}
+
+// Guard: other repeated fields keep last-wins; only the list the connection
+// decision reads is combined.
+TEST_F(HttpParserUnitTest, OtherRepeatedFieldsStillKeepTheLastValue) {
+    std::string request =
+        "GET / HTTP/1.1\r\n"
+        "X-Thing: one\r\n"
+        "X-Thing: two\r\n"
+        "\r\n";
+
+    ASSERT_EQ(HttpParser::parse_request(request, req, consumed), PR::Success);
+    EXPECT_EQ(req.headers.at("x-thing"), "two");
+}

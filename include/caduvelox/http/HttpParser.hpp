@@ -47,6 +47,12 @@ class HttpParser {
     // The point is to reject embedded CR/LF and other control characters.
     static bool is_valid_field_value(std::string_view value);
 
+    // Does a list-valued field contain `token`? RFC 9110 section 5.6.1: elements
+    // are comma-separated, surrounded by optional whitespace, and may be empty;
+    // tokens compare case-insensitively. Whole elements only -- "closed" does
+    // not contain "close".
+    static bool list_contains_token(std::string_view list, std::string_view token);
+
   private:
     static bool parse_request_line(std::string_view line, HttpRequest& out);
     static bool parse_headers(std::string_view headers_section, HttpRequest& out);

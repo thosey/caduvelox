@@ -599,6 +599,7 @@ void HttpConnectionJob::handleHttpRequest(const HttpRequest& request) {
     
     // Determine if we should keep connection alive after this response
     keep_alive_ = shouldKeepAlive(request);
+    advertise_keep_alive_ = request.version != "HTTP/1.1";
     
     // This method is called when NOT using affinity workers (fallback)
     HttpResponse response;
@@ -606,23 +607,46 @@ void HttpConnectionJob::handleHttpRequest(const HttpRequest& request) {
     
     Logger::getInstance().logMessage("HttpConnectionJob: Response generated, status=" + std::to_string(response.status_code));
     
-    sendResponse(response);
+    sendResponse(std::move(response));
 }
 
-void HttpConnectionJob::sendResponse(const HttpResponse& response) {
+void HttpConnectionJob::sendResponse(HttpResponse response) {
     Logger::getInstance().logMessage("HttpConnectionJob: Sending response, status=" + std::to_string(response.status_code));
+
+    // Decide once whether this connection outlives the response, then state it
+    // on the response -- every kind of response, not just file responses, which
+    // were the only ones that used to say "connection: close". A body response
+    // to "Connection: close" closed correctly but told an HTTP/1.1 client the
+    // connection persisted.
+    //
+    // A handler may close a connection the client wanted kept (it sets
+    // "connection: close"), but it cannot claim persistence the server is not
+    // going to give: whatever a handler put in the field is replaced by the
+    // decision. A server that is already stopping will close after this
+    // response, so it says so.
+    if (HttpParser::list_contains_token(response.getHeader("connection"), "close") ||
+        job_server_.isStopping()) {
+        keep_alive_ = false;
+    }
+    if (!keep_alive_) {
+        response.setHeader("connection", "close");
+    } else if (advertise_keep_alive_) {
+        response.setHeader("connection", "keep-alive");
+    } else {
+        // HTTP/1.1 persistence is the default and needs no field. Anything a
+        // handler wrote here (other than close, handled above) is not ours to
+        // promise -- this server negotiates no connection options.
+        response.headers.erase("connection");
+    }
     
     // Check if this is a file serving response (internal flag only, not sent to client)
     if (!response.file_path.empty()) {
         // This is a file serving request - use HTTPFileJob for zero-copy transfer
         Logger::getInstance().logMessage("HttpConnectionJob: Using HTTPFileJob for file: " + response.file_path);
         
+        // The connection field was already set above, for this path and the body
+        // path alike.
         HttpResponse response_copy = response;
-        // Use per-connection keep_alive_ flag (not response header)
-        // This is set based on HTTP/1.1 Connection header from the REQUEST
-        if (!keep_alive_) {
-            response_copy.setHeader("connection", "close");
-        }
 
         std::string file_path = response.file_path;
 
@@ -903,22 +927,22 @@ void HttpConnectionJob::handleIdleTimeout(IdleTimeoutJob* job, int res) {
 }
 
 bool HttpConnectionJob::shouldKeepAlive(const HttpRequest& request) const {
-    // Check Connection header - HTTP/1.1 defaults to keep-alive
-    auto conn_header = request.headers.find("connection");
-    if (conn_header != request.headers.end()) {
-        std::string conn_value = conn_header->second;
-        // Case-insensitive comparison
-        std::transform(conn_value.begin(), conn_value.end(), conn_value.begin(), ::tolower);
-        if (conn_value == "close") {
-            return false;
-        }
-        if (conn_value == "keep-alive") {
-            return true;
-        }
+    // Connection is a comma-separated list of options (RFC 9110 section 7.6.1).
+    // This compared the whole value against exactly "close" or "keep-alive", so
+    // "Connection: close, TE" matched neither and fell through to the HTTP/1.1
+    // default -- and the server went on to answer requests pipelined after a
+    // close, which RFC 9112 section 9.6 says it must not process.
+    const std::string options = request.getHeader("connection");
+
+    // close wins over everything, including a keep-alive in the same list.
+    if (HttpParser::list_contains_token(options, "close")) {
+        return false;
     }
-    
-    // HTTP/1.1 defaults to keep-alive, HTTP/1.0 defaults to close
-    return request.version.find("1.1") != std::string::npos;
+    if (request.version == "HTTP/1.1") {
+        return true;
+    }
+    // HTTP/1.0 closes unless the client asked otherwise.
+    return request.version == "HTTP/1.0" && HttpParser::list_contains_token(options, "keep-alive");
 }
 
 void HttpConnectionJob::continueReading() {

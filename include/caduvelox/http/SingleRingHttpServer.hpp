@@ -217,7 +217,8 @@ private:
     // not touch any member after it returns.
     void processHttpRequests();
     void handleHttpRequest(const HttpRequest& request);
-    void sendResponse(const HttpResponse& response);
+    // Takes the response by value: it states the connection disposition on it.
+    void sendResponse(HttpResponse response);
     // Called when the response currently on the wire has finished (or failed).
     // `keep_alive` is that request's decision, captured at dispatch time.
     void onResponseComplete(bool keep_alive);
@@ -241,6 +242,9 @@ private:
     unsigned idle_timeout_ms_;
     bool reading_active_;
     bool keep_alive_;  // Track if connection should remain open
+    // Persistence is not this request's version default, so a response that
+    // keeps the connection has to say keep-alive (HTTP/1.0).
+    bool advertise_keep_alive_ = false;
 
     // Response serialization (review item C6). Independent write SQEs on one
     // socket have no execution-order guarantee: if io_uring punts one to an

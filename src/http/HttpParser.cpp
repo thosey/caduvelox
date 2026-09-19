@@ -193,6 +193,16 @@ bool HttpParser::parse_headers(std::string_view headers_section, HttpRequest& ou
             if (slot->first == "content-length" && slot->second != value) {
                 return false;
             }
+            // Connection is a list, and a repeated list field is one list
+            // (RFC 9110 section 5.3). Last-wins dropped every line but the last,
+            // so "Connection: close" followed by "Connection: keep-alive" lost
+            // the close -- and with it the server's obligation to stop reading.
+            if (slot->first == "connection") {
+                slot->second += ", ";
+                slot->second += value;
+                pos = eol + 2;
+                continue;
+            }
             // Any other repeated field keeps the long-standing last-wins
             // behaviour. It is lossy for list-valued fields, but it cannot move
             // a message boundary.
@@ -262,6 +272,32 @@ std::string HttpParser::normalize_header_name(std::string_view name) {
     std::transform(result.begin(), result.end(), result.begin(), 
         [](unsigned char c){ return std::tolower(c); });
     return result;
+}
+
+bool HttpParser::list_contains_token(std::string_view list, std::string_view token) {
+    size_t pos = 0;
+    for (;;) {
+        const size_t comma = list.find(',', pos);
+        std::string_view element =
+            list.substr(pos, comma == std::string_view::npos ? std::string_view::npos : comma - pos);
+
+        const size_t first = element.find_first_not_of(" \t");
+        if (first != std::string_view::npos) {
+            const size_t last = element.find_last_not_of(" \t");
+            element = element.substr(first, last - first + 1);
+            if (element.size() == token.size() &&
+                std::equal(element.begin(), element.end(), token.begin(),
+                           [](char a, char b) {
+                               return std::tolower(static_cast<unsigned char>(a)) ==
+                                      std::tolower(static_cast<unsigned char>(b));
+                           })) {
+                return true;
+            }
+        }
+
+        if (comma == std::string_view::npos) return false;
+        pos = comma + 1;
+    }
 }
 
 } // namespace caduvelox

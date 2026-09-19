@@ -116,6 +116,8 @@ set(TEST_SOURCES
     # What a handler can make the server put on the wire (review item M7)
     response_header_framing_test.cpp
     response_head_writer_test.cpp
+    # Connection options and whether the response states them (review items M8, L14)
+    connection_disposition_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp
