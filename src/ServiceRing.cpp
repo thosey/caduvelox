@@ -30,7 +30,7 @@ bool ServiceRing::init() {
             return false;
         }
         
-        Logger::getInstance().logMessage("ServiceRing[" + std::to_string(ring_id_) + 
+        Logger::info("ServiceRing[" + std::to_string(ring_id_) + 
                                         "]: Initialized with queue depth " + 
                                         std::to_string(queue_depth_) + 
                                         (cpu_id_ >= 0 ? " (pinned to CPU " + std::to_string(cpu_id_) + ")" : ""));
@@ -44,7 +44,7 @@ bool ServiceRing::init() {
 
 void ServiceRing::start() {
     if (running_.load(std::memory_order_acquire)) {
-        Logger::getInstance().logMessage("ServiceRing[" + std::to_string(ring_id_) + 
+        Logger::info("ServiceRing[" + std::to_string(ring_id_) + 
                                         "]: Already running");
         return;
     }
@@ -52,7 +52,7 @@ void ServiceRing::start() {
     running_.store(true, std::memory_order_release);
     thread_ = std::thread(&ServiceRing::run, this);
     
-    Logger::getInstance().logMessage("ServiceRing[" + std::to_string(ring_id_) + 
+    Logger::info("ServiceRing[" + std::to_string(ring_id_) + 
                                     "]: Thread started");
 }
 
@@ -64,14 +64,14 @@ void ServiceRing::stop() {
     running_.store(false, std::memory_order_release);
     server_.stop();  // Wake up the io_uring event loop
     
-    Logger::getInstance().logMessage("ServiceRing[" + std::to_string(ring_id_) + 
+    Logger::info("ServiceRing[" + std::to_string(ring_id_) + 
                                     "]: Stop requested");
 }
 
 void ServiceRing::join() {
     if (thread_.joinable()) {
         thread_.join();
-        Logger::getInstance().logMessage("ServiceRing[" + std::to_string(ring_id_) + 
+        Logger::info("ServiceRing[" + std::to_string(ring_id_) + 
                                         "]: Thread joined");
     }
 }
@@ -82,14 +82,14 @@ void ServiceRing::run() {
         pinToCpu();
     }
 
-    Logger::getInstance().logMessage("ServiceRing[" + std::to_string(ring_id_) + 
+    Logger::info("ServiceRing[" + std::to_string(ring_id_) + 
                                     "]: Event loop starting on CPU " + 
                                     std::to_string(sched_getcpu()));
 
     // Run the io_uring event loop (blocking)
     server_.run();
 
-    Logger::getInstance().logMessage("ServiceRing[" + std::to_string(ring_id_) + 
+    Logger::info("ServiceRing[" + std::to_string(ring_id_) + 
                                     "]: Event loop stopped");
 }
 
@@ -106,7 +106,7 @@ void ServiceRing::pinToCpu() {
                                       "]: Failed to pin to CPU " + std::to_string(cpu_id_) + 
                                       ": " + std::string(strerror(ret)));
     } else {
-        Logger::getInstance().logMessage("ServiceRing[" + std::to_string(ring_id_) + 
+        Logger::info("ServiceRing[" + std::to_string(ring_id_) + 
                                         "]: Successfully pinned to CPU " + std::to_string(cpu_id_));
     }
 }

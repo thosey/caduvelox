@@ -30,6 +30,16 @@ void Logger::logCurrentError(std::string_view context_msg) {
     logError(full_message);
 }
 
+std::atomic<LogLevel> Logger::level_{LogLevel::Info};
+
+void Logger::setLevel(LogLevel level) {
+    level_.store(level, std::memory_order_relaxed);
+}
+
+LogLevel Logger::getLevel() {
+    return level_.load(std::memory_order_relaxed);
+}
+
 void Logger::setGlobalLogger(Logger* ptr) {
     logger.store(ptr, std::memory_order_release);
 }

@@ -57,7 +57,7 @@ HTTPFileJob* HTTPFileJob::createFromPool(
 }
 
 void HTTPFileJob::start(Server& server) {
-    Logger::getInstance().logMessage("HTTPFileJob: Starting file transfer fd=" + 
+    Logger::debug("HTTPFileJob: Starting file transfer fd=" + 
                                    std::to_string(client_fd_) + ", file=" + file_path_);
     
     openFile();
@@ -140,7 +140,7 @@ void HTTPFileJob::openFile() {
     const std::string range = length_ == 0
         ? "empty"
         : std::to_string(offset_) + "-" + std::to_string(offset_ + length_ - 1);
-    Logger::getInstance().logMessage("HTTPFileJob: File opened fd=" + std::to_string(file_fd_) +
+    Logger::debug("HTTPFileJob: File opened fd=" + std::to_string(file_fd_) +
                                    ", size=" + std::to_string(file_size_) +
                                    ", range=" + range);
 }
@@ -217,7 +217,7 @@ void HTTPFileJob::startSendingHeaders(Server& server) {
         std::move(header_data_),
         header_size_,
         [this, &server](int fd, size_t bytes_written) {
-            Logger::getInstance().logMessage("HTTPFileJob: Headers sent fd=" + std::to_string(fd) + 
+            Logger::debug("HTTPFileJob: Headers sent fd=" + std::to_string(fd) + 
                                            ", bytes=" + std::to_string(bytes_written));
             // Headers sent successfully, now send file content
             startSendingFile(server);
@@ -258,7 +258,7 @@ void HTTPFileJob::startSendingHeaders(Server& server) {
     // in that case: producing one needs the very SQE that could not be had, so
     // sendError() would allocate a second WriteJob only to land in its own
     // failure branch and tear down exactly the same way.
-    Logger::getInstance().logMessage("HTTPFileJob: Submitting WriteJob for headers");
+    Logger::debug("HTTPFileJob: Submitting WriteJob for headers");
     write_job->start(server);
 }
 
@@ -272,7 +272,7 @@ void HTTPFileJob::startSendingFile(Server& server) {
         offset_,
         length_,
         [this](int fd, size_t bytes_transferred) {
-            Logger::getInstance().logMessage("HTTPFileJob: Splice transfer complete fd=" + std::to_string(fd) + 
+            Logger::debug("HTTPFileJob: Splice transfer complete fd=" + std::to_string(fd) + 
                                            ", bytes=" + std::to_string(bytes_transferred));
             close(file_fd_);
             file_fd_ = -1;
@@ -298,9 +298,9 @@ void HTTPFileJob::startSendingFile(Server& server) {
     
     if (splice_job) {
         // SpliceFileJob is also a composite job - start it directly
-        Logger::getInstance().logMessage("HTTPFileJob: Starting SpliceFileJob");
+        Logger::debug("HTTPFileJob: Starting SpliceFileJob");
         splice_job->start(server);
-        Logger::getInstance().logMessage("HTTPFileJob: SpliceFileJob started");
+        Logger::debug("HTTPFileJob: SpliceFileJob started");
     } else {
         Logger::getInstance().logError("HTTPFileJob: Failed to allocate SpliceFileJob from pool");
         if (file_fd_ >= 0) {

@@ -45,15 +45,15 @@ HttpServer::HttpServer(const ServerConfig& cfg)
     // Log startup resource footprint.
     const size_t buf_mb = (static_cast<size_t>(config_.buffer_ring_count) *
                            config_.buffer_size_bytes) / (1024 * 1024);
-    Logger::getInstance().logMessage("HttpServer: Creating server with " +
+    Logger::info("HttpServer: Creating server with " +
                                      std::to_string(config_.num_rings) + " service rings");
-    Logger::getInstance().logMessage("HttpServer: Buffer ring: " +
+    Logger::info("HttpServer: Buffer ring: " +
                                      std::to_string(config_.buffer_ring_count) + " x " +
                                      std::to_string(config_.buffer_size_bytes) + " B = " +
                                      std::to_string(buf_mb) + " MB per ring");
-    Logger::getInstance().logMessage("HttpServer: kTLS pool: " +
+    Logger::info("HttpServer: kTLS pool: " +
                                      std::to_string(config_.ktls_pool_size) + " slots");
-    Logger::getInstance().logMessage("HttpServer: Connection pool: " +
+    Logger::info("HttpServer: Connection pool: " +
                                      std::to_string(config_.connection_pool_size) + " slots");
 }
 
@@ -171,13 +171,13 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
         service_rings_.push_back(std::move(ring));
         http_servers_.push_back(std::move(http_server));
         
-        Logger::getInstance().logMessage("HttpServer: Ring " + std::to_string(i) + 
+        Logger::info("HttpServer: Ring " + std::to_string(i) + 
                                         " initialized and listening");
     }
 
     state_.store(ServerState::Running, std::memory_order_release);
     
-    Logger::getInstance().logMessage("HttpServer: All " + std::to_string(config_.num_rings) + 
+    Logger::info("HttpServer: All " + std::to_string(config_.num_rings) + 
                                     " rings listening on " + bind_addr + ":" + std::to_string(port));
     
     return true;
@@ -194,14 +194,14 @@ void HttpServer::run() {
         ring->start();
     }
     
-    Logger::getInstance().logMessage("HttpServer: All service rings started");
+    Logger::info("HttpServer: All service rings started");
 
     // Wait for all service rings to finish
     joinAllRings();
 
     state_.store(ServerState::Stopped, std::memory_order_release);
     
-    Logger::getInstance().logMessage("HttpServer: All service rings stopped");
+    Logger::info("HttpServer: All service rings stopped");
 }
 
 void HttpServer::stop() {
@@ -255,7 +255,7 @@ void HttpServer::stop() {
     }
 
     if (announced) {
-        Logger::getInstance().logMessage("HttpServer: Server stopped");
+        Logger::info("HttpServer: Server stopped");
     }
 }
 

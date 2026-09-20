@@ -120,6 +120,8 @@ set(TEST_SOURCES
     connection_disposition_test.cpp
     # AcceptJob comes from its pool, on the ring thread (review items M3, M4)
     accept_job_pool_test.cpp
+    # Log levels and the per-request trace (review item M1)
+    logger_level_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp

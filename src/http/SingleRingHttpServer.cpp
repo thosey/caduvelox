@@ -72,7 +72,7 @@ bool SingleRingHttpServer::listen(int port, const std::string& bind_addr) {
 
     running_ = true;
     ktls_enabled_ = false;
-    Logger::getInstance().logMessage("HttpServer: Listening on " + bind_addr + ":" + std::to_string(port));
+    Logger::info("HttpServer: Listening on " + bind_addr + ":" + std::to_string(port));
 
     installRingLocalHooks();
 
@@ -110,7 +110,7 @@ bool SingleRingHttpServer::listenKTLS(int port, const std::string& cert_path, co
 
     running_ = true;
     ktls_enabled_ = true;
-    Logger::getInstance().logMessage("HttpServer: KTLS listening on " + bind_addr + ":" + std::to_string(port));
+    Logger::info("HttpServer: KTLS listening on " + bind_addr + ":" + std::to_string(port));
 
     installRingLocalHooks();
 
@@ -130,7 +130,7 @@ void SingleRingHttpServer::stop() {
         server_fd_ = -1;
     }
 
-    Logger::getInstance().logMessage("HttpServer: Server stopped");
+    Logger::info("HttpServer: Server stopped");
 }
 
 // Both hooks this ring needs, installed by every listen path.
@@ -242,7 +242,7 @@ void SingleRingHttpServer::handleNewConnection(int client_fd, const sockaddr* ad
         access_log += " from " + std::string(ip_str) + ":" + std::to_string(port);
     }
     
-    Logger::getInstance().logMessage(access_log);
+    Logger::info(access_log);
     
     if (ktls_enabled_) {
         // Start KTLS handshake for this connection
@@ -307,7 +307,7 @@ void SingleRingHttpServer::createConnectionHandler(int client_fd) {
 }
 
 void SingleRingHttpServer::handleKTLSReady(int client_fd, SSL* ssl) {
-    Logger::getInstance().logMessage("HttpServer: KTLS ready for fd=" + std::to_string(client_fd));
+    Logger::debug("HttpServer: KTLS ready for fd=" + std::to_string(client_fd));
     
     // KTLS handshake completed successfully!
     // At this point, the connection is encrypted and kernel TLS is enabled.
@@ -410,7 +410,7 @@ HttpConnectionJob::HttpConnectionJob(int client_fd, Server& job_server, const Ht
 {
     
     request_buffer_.reserve(8192);
-    Logger::getInstance().logMessage("HttpConnectionJob: Created for fd=" + std::to_string(client_fd_));
+    Logger::debug("HttpConnectionJob: Created for fd=" + std::to_string(client_fd_));
     
     // Don't start reading here - must be called after object is in shared_ptr
 }
@@ -483,7 +483,7 @@ void HttpConnectionJob::handleDataReceived(const char* data, ssize_t len) {
 
     if (len == 0) {
         // EOF - client disconnected
-        Logger::getInstance().logMessage("HttpConnectionJob: Client disconnected fd=" + std::to_string(client_fd_));
+        Logger::debug("HttpConnectionJob: Client disconnected fd=" + std::to_string(client_fd_));
         closeConnection();
         return;
     }
@@ -527,7 +527,7 @@ void HttpConnectionJob::handleReadError(int error) {
     }
 
     if (error == -ECANCELED) {
-        Logger::getInstance().logMessage("HttpConnectionJob: Recv cancelled (shutdown) fd=" +
+        Logger::debug("HttpConnectionJob: Recv cancelled (shutdown) fd=" +
                                          std::to_string(client_fd_));
     } else {
         Logger::getInstance().logError("HttpConnectionJob: Read error fd=" + std::to_string(client_fd_) +
@@ -610,7 +610,7 @@ void HttpConnectionJob::onResponseComplete(bool keep_alive) {
 }
 
 void HttpConnectionJob::handleHttpRequest(const HttpRequest& request) {
-    Logger::getInstance().logMessage("HttpConnectionJob: Processing " + request.method + " " + request.path);
+    Logger::debug("HttpConnectionJob: Processing " + request.method + " " + request.path);
     
     // Determine if we should keep connection alive after this response
     keep_alive_ = shouldKeepAlive(request);
@@ -620,13 +620,13 @@ void HttpConnectionJob::handleHttpRequest(const HttpRequest& request) {
     HttpResponse response;
     router_.dispatch(request, response);
     
-    Logger::getInstance().logMessage("HttpConnectionJob: Response generated, status=" + std::to_string(response.status_code));
+    Logger::debug("HttpConnectionJob: Response generated, status=" + std::to_string(response.status_code));
     
     sendResponse(std::move(response));
 }
 
 void HttpConnectionJob::sendResponse(HttpResponse response) {
-    Logger::getInstance().logMessage("HttpConnectionJob: Sending response, status=" + std::to_string(response.status_code));
+    Logger::debug("HttpConnectionJob: Sending response, status=" + std::to_string(response.status_code));
 
     // Decide once whether this connection outlives the response, then state it
     // on the response -- every kind of response, not just file responses, which
@@ -657,7 +657,7 @@ void HttpConnectionJob::sendResponse(HttpResponse response) {
     // Check if this is a file serving response (internal flag only, not sent to client)
     if (!response.file_path.empty()) {
         // This is a file serving request - use HTTPFileJob for zero-copy transfer
-        Logger::getInstance().logMessage("HttpConnectionJob: Using HTTPFileJob for file: " + response.file_path);
+        Logger::debug("HttpConnectionJob: Using HTTPFileJob for file: " + response.file_path);
         
         // The connection field was already set above, for this path and the body
         // path alike.
@@ -673,7 +673,7 @@ void HttpConnectionJob::sendResponse(HttpResponse response) {
             file_path,
             std::move(response_copy), // Pass the response for any custom headers
             [this, keep_alive = keep_alive_](int fd, size_t bytes_sent) {
-                Logger::getInstance().logMessage("HttpConnectionJob: File transfer complete fd=" + 
+                Logger::debug("HttpConnectionJob: File transfer complete fd=" + 
                                                std::to_string(fd) + ", bytes=" + std::to_string(bytes_sent));
 
                 onResponseComplete(keep_alive);
@@ -689,10 +689,10 @@ void HttpConnectionJob::sendResponse(HttpResponse response) {
         );
         
         if (http_file_job) {
-            Logger::getInstance().logMessage("HttpConnectionJob: HTTPFileJob allocated, starting...");
+            Logger::debug("HttpConnectionJob: HTTPFileJob allocated, starting...");
             // HTTPFileJob is a composite job - start it directly (it creates child jobs for io_uring)
             http_file_job->start(job_server_);
-            Logger::getInstance().logMessage("HttpConnectionJob: HTTPFileJob started");
+            Logger::debug("HttpConnectionJob: HTTPFileJob started");
         } else {
             Logger::getInstance().logError("[POOL_EXHAUSTED] type=HTTPFileJob capacity=" +
                 std::to_string(PoolManager::getCapacity<HTTPFileJob>()) +
@@ -735,7 +735,7 @@ void HttpConnectionJob::sendResponse(HttpResponse response) {
         // the keep_alive_ member at completion time was wrong under pipelining,
         // where a later request had already overwritten it.
         [this, keep_alive = keep_alive_](int fd, size_t bytes_written) {
-            Logger::getInstance().logMessage("HttpConnectionJob: Response sent fd=" + std::to_string(fd) + 
+            Logger::debug("HttpConnectionJob: Response sent fd=" + std::to_string(fd) + 
                                            ", bytes=" + std::to_string(bytes_written));
 
             onResponseComplete(keep_alive);
@@ -764,7 +764,7 @@ void HttpConnectionJob::sendResponse(HttpResponse response) {
     // and closes the connection -- the same teardown this branch used to
     // open-code. It also retries after flushing a full submission queue, which
     // the open-coded version did not. This connection may be gone on return.
-    Logger::getInstance().logMessage("HttpConnectionJob: WriteJob allocated, submitting...");
+    Logger::debug("HttpConnectionJob: WriteJob allocated, submitting...");
     write_job->start(job_server_);
 }
 
@@ -773,7 +773,7 @@ void HttpConnectionJob::closeConnection() {
     // close_pending_ and calls back in once the socket is quiet.
     if (response_in_flight_) {
         close_pending_ = true;
-        Logger::getInstance().logMessage("HttpConnectionJob: Close deferred, response in flight fd=" +
+        Logger::debug("HttpConnectionJob: Close deferred, response in flight fd=" +
                                          std::to_string(client_fd_));
         return;
     }
@@ -828,7 +828,7 @@ void HttpConnectionJob::closeConnection() {
     }
 
     if (waiting) {
-        Logger::getInstance().logMessage("HttpConnectionJob: Close deferred pending cancel completion(s) fd=" +
+        Logger::debug("HttpConnectionJob: Close deferred pending cancel completion(s) fd=" +
                                          std::to_string(deferred_close_fd_ >= 0 ? deferred_close_fd_ : client_fd_));
         return;
     }
@@ -836,7 +836,7 @@ void HttpConnectionJob::closeConnection() {
     // Perform the actual close.
     int fd_to_close = (deferred_close_fd_ >= 0) ? deferred_close_fd_ : client_fd_;
     if (fd_to_close >= 0) {
-        Logger::getInstance().logMessage("[ACCESS] DISCONNECT fd=" + std::to_string(fd_to_close));
+        Logger::info("[ACCESS] DISCONNECT fd=" + std::to_string(fd_to_close));
         close(fd_to_close);
     }
 
@@ -935,7 +935,7 @@ void HttpConnectionJob::handleIdleTimeout(IdleTimeoutJob* job, int res) {
         return;
     }
 
-    Logger::getInstance().logMessage("HttpConnectionJob: Idle timeout fd=" +
+    Logger::debug("HttpConnectionJob: Idle timeout fd=" +
                                      std::to_string(client_fd_ >= 0 ? client_fd_ : deferred_close_fd_) +
                                      ", res=" + std::to_string(res));
     closeConnection();
@@ -968,7 +968,7 @@ void HttpConnectionJob::continueReading() {
     // on client_fd_ that nothing tracks or cancels, deferring the real socket
     // teardown indefinitely once the connection eventually closes.)
     // Just start a fresh idle-wait window for the next request.
-    Logger::getInstance().logMessage("HttpConnectionJob: Continuing reading for keep-alive connection fd=" +
+    Logger::debug("HttpConnectionJob: Continuing reading for keep-alive connection fd=" +
                                    std::to_string(client_fd_));
     armIdleTimeout();
 }
@@ -991,7 +991,7 @@ bool SingleRingHttpServer::listenOnFd(int server_fd) {
     running_ = true;
     ktls_enabled_ = true;  // Assume KTLS if using this method
 
-    Logger::getInstance().logMessage("HttpServer: Listening on fd=" + std::to_string(server_fd));
+    Logger::info("HttpServer: Listening on fd=" + std::to_string(server_fd));
 
     installRingLocalHooks();
 

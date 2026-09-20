@@ -21,13 +21,13 @@ SSL_CTX* KTLSContextHelper::createServerContext(const std::string& cert_path, co
 
     // Enable kTLS globally for this context
     SSL_CTX_set_options(ctx, SSL_OP_ENABLE_KTLS);
-    Logger::getInstance().logMessage("KTLSContextHelper: Enabled SSL_OP_ENABLE_KTLS globally on SSL_CTX");
+    Logger::info("KTLSContextHelper: Enabled SSL_OP_ENABLE_KTLS globally on SSL_CTX");
 
     // Use TLS 1.2 as minimum but allow TLS 1.3 if kernel supports it
     // This provides broader compatibility while still prioritizing kTLS
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
-    Logger::getInstance().logMessage("KTLSContextHelper: Configured for TLS 1.2+ with kTLS preference");
+    Logger::info("KTLSContextHelper: Configured for TLS 1.2+ with kTLS preference");
 
     // Restrict to kTLS-compatible ciphers only (AES-GCM)
     // Modern kernels (5.2+) support both TLS 1.2 and 1.3 with AES-GCM
@@ -51,7 +51,7 @@ SSL_CTX* KTLSContextHelper::createServerContext(const std::string& cert_path, co
         return nullptr;
     }
 
-    Logger::getInstance().logMessage("KTLSContextHelper: SSL context created successfully with kTLS configuration");
+    Logger::info("KTLSContextHelper: SSL context created successfully with kTLS configuration");
     return ctx;
 }
 
@@ -127,7 +127,7 @@ bool KTLSContextHelper::loadCertificates(SSL_CTX* ctx, const std::string& cert_p
         return false;
     }
 
-    logger.logMessage("KTLSContextHelper: Certificates loaded successfully");
+    Logger::info("KTLSContextHelper: Certificates loaded successfully");
     return true;
 }
 

@@ -91,7 +91,7 @@ bool Server::init(unsigned queue_depth, unsigned buf_count, size_t buf_size) {
     // that a Server whose init() failed has no half-usable wake-up path.
     stop_signal_ = std::make_unique<EventFd>(/*semaphore=*/false, /*nonblocking=*/true);
 
-    Logger::getInstance().logMessage("Server initialized with queue depth " + std::to_string(queue_depth));
+    Logger::info("Server initialized with queue depth " + std::to_string(queue_depth));
     return true;
 }
 
@@ -137,7 +137,7 @@ void Server::run() {
     // Drain remaining completions after the event loop exits to ensure
     // pool-managed jobs release their resources on this thread.
     drainCompletions();
-    Logger::getInstance().logMessage("Server: Stopped with all jobs drained");
+    Logger::info("Server: Stopped with all jobs drained");
 }
 
 void Server::stop() {
@@ -152,7 +152,7 @@ void Server::stop() {
 
     // Early return if init() never ran (or failed): there is nothing to wake.
     if (!stop_signal_) {
-        Logger::getInstance().logMessage("Server: Stop requested (ring not initialized)");
+        Logger::info("Server: Stop requested (ring not initialized)");
         return;
     }
 
@@ -177,7 +177,7 @@ void Server::stop() {
         Logger::getInstance().logError(std::string("Server: stop wakeup failed: ") + e.what());
     }
 
-    Logger::getInstance().logMessage("Server: Stop requested");
+    Logger::info("Server: Stop requested");
 }
 
 struct io_uring_sqe* Server::registerJob(IoJob* job) {
@@ -199,7 +199,7 @@ int Server::getBufferGroupId() const {
 }
 
 void Server::drainCompletions() {
-    Logger::getInstance().logMessage("Server: Starting drain, in_flight=" + std::to_string(in_flight_));
+    Logger::info("Server: Starting drain, in_flight=" + std::to_string(in_flight_));
 
     while (in_flight_ > 0) {
         struct io_uring_cqe* cqe;
@@ -212,7 +212,7 @@ void Server::drainCompletions() {
         processAvailableCompletions();
     }
 
-    Logger::getInstance().logMessage("Server: Drain complete");
+    Logger::info("Server: Drain complete");
 }
 
 void Server::processCompletions() {

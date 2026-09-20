@@ -27,7 +27,7 @@ BufferRingCoordinator::~BufferRingCoordinator() {
 
 bool BufferRingCoordinator::setupBufferRing(struct io_uring* ring) {
     if (buffer_ring_) {
-        logger_.logMessage("Buffer ring already set up");
+        Logger::info("Buffer ring already set up");
         return true;
     }
 
@@ -55,7 +55,7 @@ bool BufferRingCoordinator::setupBufferRing(struct io_uring* ring) {
         return false;
     }
 
-    logger_.logMessage("Buffer ring created successfully: ring=" + 
+    Logger::info("Buffer ring created successfully: ring=" + 
                       std::to_string(reinterpret_cast<uintptr_t>(buffer_ring_)) + 
                       " group_id=" + std::to_string(buf_group_id_));
 
@@ -69,7 +69,7 @@ bool BufferRingCoordinator::setupBufferRing(struct io_uring* ring) {
     // Advance once by the total count to make all buffers visible
     io_uring_buf_ring_advance(buffer_ring_, buf_count_);
 
-    logger_.logMessage("Buffer ring setup complete: " + std::to_string(buf_count_) + 
+    Logger::info("Buffer ring setup complete: " + std::to_string(buf_count_) + 
                       " buffers of " + std::to_string(buf_size_) + " bytes each, " +
                       "attempting to start allocation from buffer 0");
     return true;
@@ -132,7 +132,7 @@ void BufferRingCoordinator::recycleBuffer(unsigned buffer_id) {
                          buffer_ring_mask_, 0);
     io_uring_buf_ring_advance(buffer_ring_, 1);
     
-    logger_.logMessage("Recycled buffer " + std::to_string(buffer_id) + 
+    Logger::debug("Recycled buffer " + std::to_string(buffer_id) + 
                       " back to available pool (natural order preserved)");
 }
 

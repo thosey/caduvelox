@@ -136,7 +136,7 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
                     // -ECANCELED next. Defer the retry until the pair drains,
                     // then restart the full pair (resubmitting just this leg
                     // would desync the state machine from what's in flight).
-                    Logger::getInstance().logMessage("SpliceFileJob: EAGAIN on linked leg, retrying pair after drain");
+                    Logger::debug("SpliceFileJob: EAGAIN on linked leg, retrying pair after drain");
                     retry_pending_ = true;
                     return std::nullopt;
                 }
@@ -148,7 +148,7 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
                     }
                     return cleanupSpliceFileJob;
                 }
-                Logger::getInstance().logMessage("SpliceFileJob: Got EAGAIN/EWOULDBLOCK, resubmitting operation");
+                Logger::debug("SpliceFileJob: Got EAGAIN/EWOULDBLOCK, resubmitting operation");
                 pending_operations_++;  // Restore counter
                 // Resubmit the same standalone operation (pipe→socket leg or drain);
                 // if resubmission failed, the error callback has fired — free the job.
@@ -216,7 +216,7 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
             }
 
             // This is the file→pipe completion
-            Logger::getInstance().logMessage("SpliceFileJob: File->Pipe linked splice: " + std::to_string(result) + " bytes");
+            Logger::debug("SpliceFileJob: File->Pipe linked splice: " + std::to_string(result) + " bytes");
             
             offset_ += result;
             bytes_in_pipe_ += result;
@@ -234,7 +234,7 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
             
         } else if (state_ == SplicingPipeToSocket) {
             // This is the pipe→socket completion
-            Logger::getInstance().logMessage("SpliceFileJob: Pipe->Socket linked splice: " + std::to_string(result) + " bytes, total=" + 
+            Logger::debug("SpliceFileJob: Pipe->Socket linked splice: " + std::to_string(result) + " bytes, total=" + 
                                            std::to_string(total_transferred_ + result) + ", bytes_in_pipe before: " + std::to_string(bytes_in_pipe_));
             
             total_transferred_ += result;
@@ -242,7 +242,7 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
             
             // CRITICAL: Check if pipe still has bytes (partial write)
             if (bytes_in_pipe_ > 0) {
-                Logger::getInstance().logMessage("SpliceFileJob: Partial pipe->socket write, " +
+                Logger::debug("SpliceFileJob: Partial pipe->socket write, " +
                                                std::to_string(bytes_in_pipe_) + " bytes still in pipe, draining...");
                 // Must drain the pipe before starting next file->pipe operation;
                 // if nothing could be submitted, the error callback has fired.
@@ -278,7 +278,7 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
                 return cleanupSpliceFileJob;
             } else {
                 // Transfer complete
-                Logger::getInstance().logMessage("SpliceFileJob: Transfer complete fd=" + 
+                Logger::debug("SpliceFileJob: Transfer complete fd=" + 
                                                std::to_string(client_fd_) + ", total=" + std::to_string(total_transferred_));
                 if (on_complete_) {
                     on_complete_(client_fd_, total_transferred_);
@@ -296,7 +296,7 @@ std::optional<IoJob::CleanupCallback> SpliceFileJob::handleCompletion(Server& se
 }
 
 void SpliceFileJob::start(Server& server) {
-    Logger::getInstance().logMessage("SpliceFileJob: Starting splice transfer fd=" +
+    Logger::debug("SpliceFileJob: Starting splice transfer fd=" +
                                    std::to_string(client_fd_) + " from file_fd=" + std::to_string(file_fd_));
 
     // Create the pipe first
@@ -326,7 +326,7 @@ void SpliceFileJob::createPipe() {
         return;
     }
 
-    Logger::getInstance().logMessage("SpliceFileJob: Created pipe [" +
+    Logger::debug("SpliceFileJob: Created pipe [" +
                                    std::to_string(pipe_fds_[0]) + ", " + std::to_string(pipe_fds_[1]) + "]");
 }
 
@@ -346,7 +346,7 @@ bool SpliceFileJob::startLinkedSplice(Server& server) {
         // Nothing to transfer (empty file, or the whole range is already sent).
         // Complete immediately without submitting anything; for an empty file the
         // headers the caller already sent are the entire response.
-        Logger::getInstance().logMessage("SpliceFileJob: Transfer complete fd=" +
+        Logger::debug("SpliceFileJob: Transfer complete fd=" +
                                        std::to_string(client_fd_) + ", total=" + std::to_string(total_transferred_));
         if (on_complete_) {
             on_complete_(client_fd_, total_transferred_);
@@ -354,7 +354,7 @@ bool SpliceFileJob::startLinkedSplice(Server& server) {
         return false;
     }
 
-    Logger::getInstance().logMessage("SpliceFileJob: Starting linked splice - chunk_size=" +
+    Logger::debug("SpliceFileJob: Starting linked splice - chunk_size=" +
                                    std::to_string(chunk_size) + ", offset=" + std::to_string(offset_));
 
     // Get SQE for file→pipe splice (stage 1)
@@ -407,7 +407,7 @@ bool SpliceFileJob::drainPipeToSocket(Server& server) {
     // Drain remaining bytes from pipe to socket (after partial write)
     // We know bytes_in_pipe_ > 0, so submit a pipe→socket splice for those bytes
 
-    Logger::getInstance().logMessage("SpliceFileJob: Draining " + std::to_string(bytes_in_pipe_) +
+    Logger::debug("SpliceFileJob: Draining " + std::to_string(bytes_in_pipe_) +
                                    " bytes from pipe to socket");
 
     struct io_uring_sqe* sqe = server.registerJob(this);

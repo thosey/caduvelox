@@ -66,17 +66,17 @@ bool KTLSJob::initializeSSL() {
 
     // Enable kTLS option to let OpenSSL automatically use kernel TLS
     SSL_set_options(ssl_, SSL_OP_ENABLE_KTLS);
-    logger_.logMessage("KTLSJob: Enabled SSL_OP_ENABLE_KTLS for automatic kTLS support");
+    Logger::debug("KTLSJob: Enabled SSL_OP_ENABLE_KTLS for automatic kTLS support");
 
     // Set the socket file descriptor
-    logger_.logMessage("KTLSJob: Setting SSL fd=" + std::to_string(client_fd_));
+    Logger::debug("KTLSJob: Setting SSL fd=" + std::to_string(client_fd_));
     if (!SSL_set_fd(ssl_, client_fd_)) {
         logger_.logError("KTLSJob: Failed to set SSL file descriptor for fd=" + std::to_string(client_fd_));
         SSL_free(ssl_);
         ssl_ = nullptr;
         return false;
     }
-    logger_.logMessage("KTLSJob: SSL fd set successfully, ssl_initialized=true");
+    Logger::debug("KTLSJob: SSL fd set successfully, ssl_initialized=true");
 
     ssl_initialized_ = true;
     return true;
@@ -84,13 +84,13 @@ bool KTLSJob::initializeSSL() {
 
 bool KTLSJob::completeHandshake() {
     // Handshake completed successfully!
-    logger_.logMessage("KTLSJob: TLS handshake completed for fd=" + std::to_string(client_fd_));
+    Logger::debug("KTLSJob: TLS handshake completed for fd=" + std::to_string(client_fd_));
 
     // Enable kTLS - this is required for io_uring TLS operations
     if (enableKTLS()) {
         state_ = State::KTLS_READY;
         ktls_enabled_ = true;
-        logger_.logMessage("KTLSJob: kTLS enabled for fd=" + std::to_string(client_fd_));
+        Logger::debug("KTLSJob: kTLS enabled for fd=" + std::to_string(client_fd_));
         if (on_success_) {
             on_success_(client_fd_, ssl_);
         }
@@ -163,7 +163,7 @@ bool KTLSJob::enableKTLS() {
     // Check if OpenSSL has automatically set up kTLS
     BIO* bio = SSL_get_wbio(ssl_);
     if (bio != nullptr && BIO_get_ktls_send(bio) && BIO_get_ktls_recv(bio)) {
-        logger_.logMessage("KTLSJob: kTLS fully enabled automatically by OpenSSL for fd=" +
+        Logger::debug("KTLSJob: kTLS fully enabled automatically by OpenSSL for fd=" +
                           std::to_string(client_fd_));
         return true;
     }

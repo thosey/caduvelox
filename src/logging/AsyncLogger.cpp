@@ -9,19 +9,23 @@
 
 namespace caduvelox {
 
-enum class LogLevel : uint8_t { MESSAGE = 0, ERROR = 1 };
+// Which of the Logger methods a queued entry came from. Renamed from LogLevel:
+// that name now belongs to the public verbosity enum in Logger.hpp, and this is
+// not a level -- an error entry is not "more severe", it just goes to the other
+// delegate method.
+enum class EntryKind : uint8_t { Message = 0, Error = 1 };
 
 // Fixed-size log message for zero-malloc async logging
 struct LogMessage {
     std::chrono::system_clock::time_point timestamp;
-    LogLevel level;
+    EntryKind level;
     char message[1024]; // Fixed 1024-byte buffer
     size_t length;      // Actual message length
 
     // Constructor from string_view (zero-copy interface)
     LogMessage() = default;
 
-    LogMessage(LogLevel lvl, std::string_view msg)
+    LogMessage(EntryKind lvl, std::string_view msg)
         : timestamp(std::chrono::system_clock::now()), level(lvl),
           length(std::min(msg.size(), sizeof(message) - 1)) {
         std::memcpy(message, msg.data(), length);
@@ -54,12 +58,12 @@ class AsyncLogger::Impl {
         // Safe to destroy fRingBuffer and fDelegate (happens automatically)
     }
 
-    void logMessage(std::string_view msg) { enqueueLogMessage(LogLevel::MESSAGE, msg); }
+    void logMessage(std::string_view msg) { enqueueLogMessage(EntryKind::Message, msg); }
 
-    void logError(std::string_view msg) { enqueueLogMessage(LogLevel::ERROR, msg); }
+    void logError(std::string_view msg) { enqueueLogMessage(EntryKind::Error, msg); }
 
   private:
-    void enqueueLogMessage(LogLevel level, std::string_view msg) {
+    void enqueueLogMessage(EntryKind level, std::string_view msg) {
         // Check if we're shutting down - don't attempt fallback logging
         if (!fRunning.load(std::memory_order_acquire)) {
             // During shutdown, drop the message to avoid use-after-free
@@ -79,10 +83,10 @@ class AsyncLogger::Impl {
             fallbackMsg += msg;
             
             switch (level) {
-            case LogLevel::MESSAGE:
+            case EntryKind::Message:
                 fDelegate->logMessage(fallbackMsg);
                 break;
-            case LogLevel::ERROR:
+            case EntryKind::Error:
                 fDelegate->logError(fallbackMsg);
                 break;
             }
@@ -109,10 +113,10 @@ class AsyncLogger::Impl {
 
     void processLogMessage(const LogMessage &msg) {
         switch (msg.level) {
-        case LogLevel::MESSAGE:
+        case EntryKind::Message:
             fDelegate->logMessage(msg.getMessage());
             break;
-        case LogLevel::ERROR:
+        case EntryKind::Error:
             fDelegate->logError(msg.getMessage());
             break;
         }
