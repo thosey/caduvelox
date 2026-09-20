@@ -10,16 +10,9 @@ leak:libcrypto.so
 leak:CRYPTO_malloc
 leak:CRYPTO_zalloc
 
-# --- Ours: known, tracked, NOT third-party ---
+# --- Ours: none. ---
 #
-# AcceptJob is heap-allocated by AcceptJob::create() and freed only when its
-# multishot accept delivers a terminal CQE. The shutdown path calls
-# requestShutdownCancel() and immediately nulls accept_job_, so if the ring is
-# torn down before the cancel's CQE is drained, the job is stranded. Reproduces
-# in MultiRingKTLSShutdownTest (~2.2 KB over 25 allocations).
-#
-# This is review item M3 (AcceptJob is not actually pool-allocated despite the
-# accept_pool_size config) and neighbours H5. Remove this suppression as part of
-# fixing AcceptJob ownership — it exists so the gate can be turned on now rather
-# than waiting for that work.
-leak:caduvelox::AcceptJob::create
+# The one entry that used to live here (caduvelox::AcceptJob::create) is gone:
+# AcceptJob is now pool-allocated on the ring thread, so the stranded job it
+# described cannot happen. Anything added below is a leak the gate will no
+# longer catch, so justify it and keep it short-lived.

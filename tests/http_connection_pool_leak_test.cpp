@@ -41,17 +41,21 @@ protected:
             res.setHeader("Connection", "close");  // Force connection close
         });
         
+        
+        // Listen before the loop starts. listen() installs this ring's startup
+        // hook, which Server::run() runs on the ring thread to arm the accept, so a
+        // listen after the loop is already running is never seen. It was never safe
+        // the other way round either: listen() submits to the ring, which no other
+        // thread may touch while the ring thread is in the loop.
+        ASSERT_TRUE(http_server_->listen(test_port_, "127.0.0.1"));
+
         // Start event loop
         event_loop_thread_ = std::thread([this]() {
             job_server_.run();
         });
         
         // Give event loop time to start
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        
-        // Start listening
-        ASSERT_TRUE(http_server_->listen(test_port_, "127.0.0.1"));
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
     
     void TearDown() override {

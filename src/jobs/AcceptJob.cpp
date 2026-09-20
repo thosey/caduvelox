@@ -12,6 +12,12 @@
 template<>
 size_t caduvelox::PoolCapacityConfig<caduvelox::AcceptJob>::capacity = 2;
 
+namespace {
+    void cleanupAcceptJob(caduvelox::IoJob* job) {
+        caduvelox::PoolManager::deallocate(static_cast<caduvelox::AcceptJob*>(job));
+    }
+}
+
 namespace caduvelox {
 
 AcceptJob::AcceptJob(int server_fd)
@@ -19,17 +25,33 @@ AcceptJob::AcceptJob(int server_fd)
 }
 
 
+// Pool-allocated, despite this having been plain new/delete for a long time
+// while accept_pool_size, PoolCapacityConfig<AcceptJob> and the
+// [POOL_EXHAUSTED] branch in startAccepting() all configured and reported on a
+// pool nothing used. `new` never returns null, so that branch was unreachable.
+//
+// The pools are thread-local, so this must be called on the ring thread that
+// will service the accept -- otherwise the job comes from one thread's pool and
+// is freed into another's. SingleRingHttpServer arms the accept from
+// Server::setStartupFn() for exactly that reason. Allocating on the wrong thread
+// is also what leaked: HttpServer::listenKTLS() built every ring's accept up
+// front on the main thread, and a job stranded there had no pool to return to.
 AcceptJob* AcceptJob::create(int server_fd,
                             ConnectionCallback on_connection,
                             ErrorCallback on_error) {
-    auto* job = new AcceptJob(server_fd);
+    AcceptJob* job = PoolManager::allocate<AcceptJob>(server_fd);
+    if (!job) {
+        return nullptr;  // Pool exhausted -- now actually reachable.
+    }
     job->on_connection_ = std::move(on_connection);
     job->on_error_ = std::move(on_error);
     return job;
 }
 
 void AcceptJob::freePoolAllocated(AcceptJob* job) {
-    delete job;
+    if (job) {
+        PoolManager::deallocate<AcceptJob>(job);
+    }
 }
 
 std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server, struct io_uring_cqe* cqe) {
@@ -50,9 +72,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
 
         // Unrecoverable error, or any error during shutdown — free the heap-allocated job.
         clearOwnerSlot();
-        return [](IoJob* job) {
-            delete static_cast<AcceptJob*>(job);
-        };
+        return cleanupAcceptJob;
     }
 
     // For multishot accept, result==0 can indicate setup completion, not a real connection.
@@ -62,9 +82,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
             if (shutting_down) {
                 // Do not re-arm the accept during shutdown.
                 clearOwnerSlot();
-                return [](IoJob* job) {
-                    delete static_cast<AcceptJob*>(job);
-                };
+                return cleanupAcceptJob;
             }
             resubmitAccept(server);
             return std::nullopt;
@@ -92,9 +110,7 @@ std::optional<IoJob::CleanupCallback> AcceptJob::handleCompletion(Server& server
     if (!(cqe->flags & IORING_CQE_F_MORE)) {
         if (shutting_down) {
             clearOwnerSlot();
-            return [](IoJob* job) {
-                delete static_cast<AcceptJob*>(job);
-            };
+            return cleanupAcceptJob;
         }
         resubmitAccept(server);
         return std::nullopt;

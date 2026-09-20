@@ -32,8 +32,8 @@ protected:
             res.setHeader("Content-Type", "text/plain");
         });
 
-        // Start the io_uring event loop so tests can submit jobs immediately.
-        startEventLoop();
+        // The event loop is NOT started here: listen() has to come first. See
+        // listenAndRun().
     }
     
     void TearDown() override {
@@ -137,6 +137,22 @@ protected:
     std::thread event_loop_thread_;
     
     // Helper to start the event loop in a background thread
+    // Listen first, then start the loop.
+    //
+    // listen() installs this ring's startup hook, and Server::run() invokes that
+    // on the ring thread to arm the accept -- so a listen after the loop has
+    // started is never seen. It was also unsafe before that hook existed:
+    // listen() submits to the ring, and the submission queue is not safe to
+    // touch from another thread while the ring thread is in the loop (the same
+    // hazard that made stop() use an eventfd).
+    bool listenAndRun(int port) {
+        if (!http_server_->listen(port, "127.0.0.1")) {
+            return false;
+        }
+        startEventLoop();
+        return true;
+    }
+
     void startEventLoop() {
         if (event_loop_thread_.joinable()) {
             return;
@@ -170,7 +186,7 @@ TEST_F(JobHttpServerTest, ServerListenFailure) {
 TEST_F(JobHttpServerTest, BasicHttpRequest) {
     // Start server on a specific port
     const int test_port = 8081;
-    ASSERT_TRUE(http_server_->listen(test_port, "127.0.0.1"));
+    ASSERT_TRUE(listenAndRun(test_port));
     
     // Give the server time to start accepting connections
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -194,7 +210,7 @@ TEST_F(JobHttpServerTest, BasicHttpRequest) {
 TEST_F(JobHttpServerTest, NotFoundResponse) {
     // Start server
     const int test_port = 8082;
-    ASSERT_TRUE(http_server_->listen(test_port, "127.0.0.1"));
+    ASSERT_TRUE(listenAndRun(test_port));
     
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
@@ -216,7 +232,7 @@ TEST_F(JobHttpServerTest, NotFoundResponse) {
 TEST_F(JobHttpServerTest, MultipleRequests) {
     // Test that the server can handle multiple sequential requests
     const int test_port = 8083;
-    ASSERT_TRUE(http_server_->listen(test_port, "127.0.0.1"));
+    ASSERT_TRUE(listenAndRun(test_port));
     
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
@@ -237,7 +253,7 @@ TEST_F(JobHttpServerTest, MultipleRequests) {
 TEST_F(JobHttpServerTest, ConcurrentRequests) {
     // Test concurrent requests to check for race conditions
     const int test_port = 8084;
-    ASSERT_TRUE(http_server_->listen(test_port, "127.0.0.1"));
+    ASSERT_TRUE(listenAndRun(test_port));
     
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
@@ -283,7 +299,7 @@ TEST_F(JobHttpServerTest, DebugFileDescriptorHandling) {
     ASSERT_NE(stdin_flags, -1) << "Failed to get stdin flags";
     
     // Start server
-    ASSERT_TRUE(http_server_->listen(test_port, "127.0.0.1"));
+    ASSERT_TRUE(listenAndRun(test_port));
     
     // Check that stdin state hasn't changed
     int new_stdin_flags = fcntl(STDIN_FILENO, F_GETFL);

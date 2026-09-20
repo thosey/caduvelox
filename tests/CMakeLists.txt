@@ -118,6 +118,8 @@ set(TEST_SOURCES
     response_head_writer_test.cpp
     # Connection options and whether the response states them (review items M8, L14)
     connection_disposition_test.cpp
+    # AcceptJob comes from its pool, on the ring thread (review items M3, M4)
+    accept_job_pool_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp

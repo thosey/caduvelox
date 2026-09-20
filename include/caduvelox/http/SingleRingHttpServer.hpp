@@ -124,6 +124,9 @@ private:
     /**
      * Start accepting connections
      */
+    // Install this ring's shutdown sweep and its startup hook (which arms the
+    // accept on the ring thread). Called by every listen path.
+    void installRingLocalHooks();
     void startAccepting();
 
     /**

@@ -74,23 +74,7 @@ bool SingleRingHttpServer::listen(int port, const std::string& bind_addr) {
     ktls_enabled_ = false;
     Logger::getInstance().logMessage("HttpServer: Listening on " + bind_addr + ":" + std::to_string(port));
 
-    // Install the ring-local shutdown sweep so idle keep-alive connections are
-    // cancelled promptly when the server enters Stopping/Aborting state.
-    job_server_.setShutdownSweepFn([this](Server& server) {
-        PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
-            job.requestShutdownCancel(server);
-        });
-        PoolManager::sweepLive<IdleTimeoutJob>([&](IdleTimeoutJob& job) {
-            job.requestShutdownCancel(server);
-        });
-        if (accept_job_) {
-            accept_job_->requestShutdownCancel(server);
-            accept_job_ = nullptr;
-        }
-    });
-
-    // Start accepting connections
-    startAccepting();
+    installRingLocalHooks();
 
     return true;
 }
@@ -128,21 +112,7 @@ bool SingleRingHttpServer::listenKTLS(int port, const std::string& cert_path, co
     ktls_enabled_ = true;
     Logger::getInstance().logMessage("HttpServer: KTLS listening on " + bind_addr + ":" + std::to_string(port));
 
-    job_server_.setShutdownSweepFn([this](Server& server) {
-        PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
-            job.requestShutdownCancel(server);
-        });
-        PoolManager::sweepLive<IdleTimeoutJob>([&](IdleTimeoutJob& job) {
-            job.requestShutdownCancel(server);
-        });
-        if (accept_job_) {
-            accept_job_->requestShutdownCancel(server);
-            accept_job_ = nullptr;
-        }
-    });
-
-    // Start accepting connections
-    startAccepting();
+    installRingLocalHooks();
 
     return true;
 }
@@ -161,6 +131,51 @@ void SingleRingHttpServer::stop() {
     }
 
     Logger::getInstance().logMessage("HttpServer: Server stopped");
+}
+
+// Both hooks this ring needs, installed by every listen path.
+//
+// The shutdown sweep cancels idle keep-alive connections (and the accept) when
+// the server enters Stopping/Aborting, so a quiet connection does not hold the
+// ring open.
+//
+// The accept is armed from the startup function rather than here, because
+// Server::run() calls that on the ring thread. AcceptJob is pool-allocated and
+// the pools are thread-local, so arming it from the caller's thread -- which is
+// where listen() runs, before any ring thread exists -- would take the job from
+// the caller's pool and free it into the ring's. That is also how the job came
+// to leak: HttpServer::listenKTLS() creates every ring's accept up front on the
+// main thread, and a job stranded there has no pool to return to.
+//
+// This used to be three identical copies, one per listen path.
+void SingleRingHttpServer::installRingLocalHooks() {
+    // Setup that arrives after run() has begun is simply never seen: the startup
+    // function below is read once, at the top of the loop. Silently never
+    // accepting is a poor way to find that out.
+    if (job_server_.isLoopRunning()) {
+        Logger::getInstance().logError(
+            "HttpServer: listen() was called after the event loop started. The accept "
+            "cannot be armed from this thread, and the startup hook that would arm it "
+            "has already been passed, so this ring will not accept connections. Call "
+            "listen() before run().");
+    }
+
+    job_server_.setShutdownSweepFn([this](Server& server) {
+        PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
+            job.requestShutdownCancel(server);
+        });
+        PoolManager::sweepLive<IdleTimeoutJob>([&](IdleTimeoutJob& job) {
+            job.requestShutdownCancel(server);
+        });
+        if (accept_job_) {
+            accept_job_->requestShutdownCancel(server);
+            accept_job_ = nullptr;
+        }
+    });
+
+    job_server_.setStartupFn([this](Server&) {
+        startAccepting();
+    });
 }
 
 void SingleRingHttpServer::startAccepting() {
@@ -978,21 +993,7 @@ bool SingleRingHttpServer::listenOnFd(int server_fd) {
 
     Logger::getInstance().logMessage("HttpServer: Listening on fd=" + std::to_string(server_fd));
 
-    job_server_.setShutdownSweepFn([this](Server& server) {
-        PoolManager::sweepLive<HttpMultishotRecvJob>([&](HttpMultishotRecvJob& job) {
-            job.requestShutdownCancel(server);
-        });
-        PoolManager::sweepLive<IdleTimeoutJob>([&](IdleTimeoutJob& job) {
-            job.requestShutdownCancel(server);
-        });
-        if (accept_job_) {
-            accept_job_->requestShutdownCancel(server);
-            accept_job_ = nullptr;
-        }
-    });
-
-    // Start accepting connections
-    startAccepting();
+    installRingLocalHooks();
 
     return true;
 }

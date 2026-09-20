@@ -120,6 +120,17 @@ public:
     bool isAborting() const;
 
     /**
+     * Has run()'s event loop started? Set on the ring thread as run() begins and
+     * cleared when it returns.
+     *
+     * A diagnostic only: a foreign thread's reading of it can be stale the moment
+     * it returns. It exists to catch setup arriving too late to be seen -- a
+     * listen() whose startup function run() has already passed, which would
+     * otherwise never arm anything and simply never accept.
+     */
+    bool isLoopRunning() const;
+
+    /**
      * Register a function called once at the start of run(), on the ring thread,
      * before the event loop begins. Used by SingleRingHttpServer to allocate and
      * submit the AcceptJob from the correct thread-local pool.
@@ -159,6 +170,8 @@ private:
 
     // Core io_uring state (stack allocated like original Server)
     struct io_uring ring_;
+    // See isLoopRunning(). Written only by the ring thread in run().
+    std::atomic<bool> loop_running_{false};
     std::atomic<int> in_flight_{0};  // count of registered operations not yet fully completed
 
     // Owned local state used when no external atomic has been installed.

@@ -122,6 +122,8 @@ void Server::run() {
     // as it is armed.
     armStopSignal();
 
+    loop_running_.store(true, std::memory_order_release);
+
     if (startup_fn_) {
         startup_fn_(*this);
     }
@@ -129,6 +131,8 @@ void Server::run() {
     while (server_state_->load(std::memory_order_acquire) == ServerState::Running) {
         processCompletions();
     }
+
+    loop_running_.store(false, std::memory_order_release);
 
     // Drain remaining completions after the event loop exits to ensure
     // pool-managed jobs release their resources on this thread.
@@ -285,6 +289,10 @@ bool Server::isStopping() const {
 
 bool Server::isAborting() const {
     return getServerState() == ServerState::Aborting;
+}
+
+bool Server::isLoopRunning() const {
+    return loop_running_.load(std::memory_order_acquire);
 }
 
 void Server::setStartupFn(std::function<void(Server&)> fn) {

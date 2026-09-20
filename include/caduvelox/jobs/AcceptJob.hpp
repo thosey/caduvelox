@@ -10,6 +10,11 @@ namespace caduvelox {
 /**
  * Job for accepting new connections using multishot accept.
  * Always uses io_uring_prep_multishot_accept for continuous connection acceptance.
+ *
+ * Pool-allocated, and the pools are thread-local: create() must be called on the
+ * ring thread that will service the accept, or the job is taken from one
+ * thread's pool and freed into another's. SingleRingHttpServer therefore arms
+ * the accept from Server::setStartupFn(), which runs on the ring thread.
  */
 class AcceptJob : public IoJob {
 public:
@@ -17,7 +22,10 @@ public:
     using ErrorCallback = std::function<void(int error)>;
 
     /**
-     * Create a multishot accept job from lock-free pool 
+     * Create a multishot accept job from the lock-free pool.
+     *
+     * Must be called on the ring thread that will service the accept -- see the
+     * note on the class.
      * @param server_fd The listening socket file descriptor
      * @param on_connection Callback for new connections (optional)
      * @param on_error Callback for errors (optional)
