@@ -84,11 +84,37 @@ void HttpRouter::addRouteWithCaptures(const std::string& method, const std::stri
 }
 
 void HttpRouter::dispatch(const HttpRequest& req, HttpResponse& res) const {
+    // Match the path, not the whole request-target. req.path is the raw target,
+    // query string included, and matching all of it meant an anchored route like
+    // "^/api/items$" missed "/api/items?page=2" and a capture like "^/files/(.+)$"
+    // swallowed the query into the filename. Handlers still get req.path whole.
+    //
+    // The common case has no query, so match req.path in place rather than copy it.
+    const size_t query = req.path.find('?');
+    std::string stripped;
+    const std::string* route_path = &req.path;
+    if (query != std::string::npos) {
+        stripped.assign(req.path, 0, query);
+        route_path = &stripped;
+    }
+
+    // Never hand std::regex an unbounded path. It matches recursively, one frame
+    // per character: a long enough path overflows the ring thread's stack and
+    // takes the process with it, and well before that it costs hundreds of
+    // microseconds per route. See MAX_ROUTABLE_PATH. This check is the guard;
+    // it does not rely on the parser's request-line limit, which was chosen for
+    // other reasons and could be raised without anyone thinking of this.
+    if (route_path->size() > MAX_ROUTABLE_PATH) {
+        handle_uri_too_long(res);
+        return;
+    }
+
     for (const auto& route : routes_) {
         if (route.method != "ALL" && route.method != req.method) continue;
         
+        // match_results points into *route_path, which outlives the handler call.
         std::smatch match_results;
-        if (std::regex_match(req.path, match_results, route.path_regex)) {
+        if (std::regex_match(*route_path, match_results, route.path_regex)) {
             try {
                 if (route.uses_captures && route.handler_with_captures) {
                     // Use capture-aware handler with match results
@@ -136,6 +162,13 @@ void HttpRouter::fallback_to_default_headers(HttpResponse& res) const {
     if (res.getHeader("content-type").empty() && res.file_path.empty()) {
         res.setHeader("content-type", "text/plain");
     }
+}
+
+void HttpRouter::handle_uri_too_long(HttpResponse& res) const {
+    // RFC 9110 section 15.5.15.
+    res.setStatus(414, "URI Too Long");
+    res.setBody("URI Too Long");
+    res.setHeader("content-type", "text/plain");
 }
 
 void HttpRouter::handle_not_found(HttpResponse& res) const {

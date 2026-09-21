@@ -8,6 +8,27 @@ namespace caduvelox {
 
 class HttpRouter {
   public:
+    /**
+     * Longest path, in bytes, the router will run a route regex over. Anything
+     * longer is answered 414 URI Too Long without matching.
+     *
+     * libstdc++'s std::regex matches recursively, one frame per input character.
+     * Measured: "^/files/.*$" costs ~68 ns per character (540 us at 8 KiB), and
+     * overflows an 8 MB stack -- the default for ring threads -- somewhere between
+     * 32 KiB and 64 KiB, taking the whole process down. At 2 KiB the worst case
+     * measured ~165 us for a request that reaches a "^/files/.*$" route -- still
+     * about 10x a normal request, but bounded -- and the crash is at least 16x
+     * away. Far longer than any path a real client sends.
+     *
+     * Only the path counts: the query string is not matched (see dispatch()).
+     *
+     * What this does NOT protect against: a route pattern with nested quantifiers,
+     * such as "^(a+)+$" or "^(\w+\s?)*$", backtracks exponentially and can take
+     * seconds on input far shorter than this limit. Patterns are supplied by the
+     * application, so keep them anchored and free of nested repetition.
+     */
+    static constexpr size_t MAX_ROUTABLE_PATH = 2048;
+
     struct Route {
         std::string method;                          // e.g. "GET", "POST", or "ALL"
         std::regex path_regex;                       // e.g. R"(^/items/\d+$)"
@@ -42,7 +63,12 @@ class HttpRouter {
     void allWithCaptures(const std::string& pathRegex, HttpHandlerWithCaptures handler);
     void addRouteWithCaptures(const std::string& method, const std::string& pathRegex, HttpHandlerWithCaptures handler);
 
-    // Route a request and generate response
+    // Route a request and generate response.
+    //
+    // Routes match the path only -- the request-target up to the first '?' -- so
+    // a query string never stops a route matching and never leaks into a
+    // capture. req.path is passed to the handler unchanged. A path longer than
+    // MAX_ROUTABLE_PATH is answered 414 without running any regex.
     void dispatch(const HttpRequest& req, HttpResponse& res) const;
 
   private:
@@ -50,6 +76,7 @@ class HttpRouter {
     
     void fallback_to_default_headers(HttpResponse& res) const;
     void handle_not_found(HttpResponse& res) const;
+    void handle_uri_too_long(HttpResponse& res) const;
 };
 
 } // namespace caduvelox

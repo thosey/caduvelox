@@ -164,8 +164,12 @@ int main(int argc, char** argv) {
 
         // Serve files under /files/<path>
         https_server->addRoute("GET", R"(^/files/(.+)$)", [docroot](const HttpRequest& req, HttpResponse& res){
-            // Extract path from request (e.g., /files/test.txt -> test.txt)
-            std::string path = req.path.substr(7);  // Remove "/files/" prefix
+            // Extract path from request (e.g., /files/test.txt -> test.txt).
+            // req.path is the raw request-target, so stop at the query string:
+            // "/files/app.js?v=3" names app.js. The router matches without the
+            // query, but anything that re-reads req.path has to strip it too.
+            const size_t query = req.path.find('?');
+            std::string path = req.path.substr(7, query == std::string::npos ? std::string::npos : query - 7);
             
             // Prevent path traversal
             if (path.find("..") != std::string::npos || path.empty() || path[0] == '/') {

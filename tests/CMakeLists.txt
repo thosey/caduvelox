@@ -122,6 +122,8 @@ set(TEST_SOURCES
     accept_job_pool_test.cpp
     # Log levels and the per-request trace (review item M1)
     logger_level_test.cpp
+    # What the router matches against, and how much of it (review item M2)
+    http_router_bounds_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp
