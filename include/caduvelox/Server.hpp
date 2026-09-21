@@ -97,6 +97,7 @@ public:
     /**
      * Get the buffer ring coordinator for zero-copy operations
      */
+    // nullptr until init() has succeeded.
     std::shared_ptr<BufferRingCoordinator> getBufferRingCoordinator() const;
 
     /**

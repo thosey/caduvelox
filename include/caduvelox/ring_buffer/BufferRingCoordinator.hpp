@@ -2,6 +2,7 @@
 
 #include <liburing.h>
 #include <memory>
+#include <string>
 
 namespace caduvelox {
 
@@ -27,6 +28,9 @@ public:
 
     // Buffer ring lifecycle
     bool setupBufferRing(struct io_uring* ring);
+
+    // Why the last setupBufferRing() failed, with the errno text. Empty if it did not.
+    const std::string& lastError() const { return last_error_; }
     void cleanupBufferRing();
     
     // Buffer ring queries
@@ -55,6 +59,7 @@ private:
     unsigned buffer_ring_mask_{0};
     
     Logger& logger_;
+    std::string last_error_;
 };
 
 } // namespace caduvelox

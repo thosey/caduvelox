@@ -2,6 +2,7 @@
 #include "caduvelox/jobs/IoJob.hpp"
 #include "caduvelox/logger/Logger.hpp"
 #include "caduvelox/ring_buffer/BufferRingCoordinator.hpp"
+#include "caduvelox/ring_buffer/BufferRingLimits.hpp"
 #include "caduvelox/util/EventFd.hpp"
 #include <liburing.h>
 #include <poll.h>
@@ -57,10 +58,13 @@ void ignoreSigPipeOnce() {
 
 } // namespace
 
+// No BufferRingCoordinator here: init() creates the one that is actually used,
+// sized as asked. The constructor used to build a default one that init()
+// replaced unconditionally, leaving an uninitialised Server holding a coordinator
+// with no ring behind it.
 Server::Server()
     : ring_{},
-      server_state_(&local_state_),
-      buffer_ring_coordinator_(std::make_shared<BufferRingCoordinator>()) {
+      server_state_(&local_state_) {
     ring_.ring_fd = -1;  // sentinel: ring not yet initialized; distinguishes uninit from fd 0 (stdin)
 }
 
@@ -73,6 +77,22 @@ Server::~Server() {
 }
 
 bool Server::init(unsigned queue_depth, unsigned buf_count, size_t buf_size) {
+    // Refuse bad buffer dimensions before creating anything. Server is public and
+    // is not always reached through ServerConfig::validate(), and letting the
+    // kernel reject them produced an error that blamed the kernel version.
+    if (!ring_limits::isValidBufferRingCount(buf_count)) {
+        throw std::invalid_argument(
+            "Server::init: buffer ring count must be a power of two between 1 and " +
+            std::to_string(ring_limits::MAX_BUFFER_RING_ENTRIES) + ", got " +
+            std::to_string(buf_count));
+    }
+    if (!ring_limits::isValidBufferSize(buf_size)) {
+        throw std::invalid_argument(
+            "Server::init: buffer size must be between 1 and " +
+            std::to_string(ring_limits::MAX_BUFFER_SIZE) + " bytes, got " +
+            std::to_string(buf_size));
+    }
+
     // Before any socket write can happen. See ignoreSigPipeOnce() above.
     ignoreSigPipeOnce();
 
@@ -84,7 +104,8 @@ bool Server::init(unsigned queue_depth, unsigned buf_count, size_t buf_size) {
     // Create and set up the buffer ring with the requested dimensions.
     buffer_ring_coordinator_ = std::make_shared<BufferRingCoordinator>(buf_count, buf_size);
     if (!buffer_ring_coordinator_->setupBufferRing(&ring_)) {
-        throw std::runtime_error("Failed to setup buffer ring - this requires a recent kernel with buffer ring support");
+        throw std::runtime_error("Failed to set up the provided-buffer ring: " +
+                                 buffer_ring_coordinator_->lastError());
     }
 
     // Cross-thread stop channel. Created here rather than in the constructor so
@@ -195,6 +216,9 @@ int Server::submit() {
 }
 
 int Server::getBufferGroupId() const {
+    if (!buffer_ring_coordinator_) {
+        throw std::logic_error("Server::getBufferGroupId() called before init()");
+    }
     return buffer_ring_coordinator_->getBufferGroupId();
 }
 

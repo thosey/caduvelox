@@ -124,6 +124,8 @@ set(TEST_SOURCES
     logger_level_test.cpp
     # What the router matches against, and how much of it (review item M2)
     http_router_bounds_test.cpp
+    # Ring and buffer dimensions, and what a bad one reports (review items M5, M6)
+    server_config_limits_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp

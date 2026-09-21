@@ -1,5 +1,6 @@
 #pragma once
 
+#include "caduvelox/ring_buffer/BufferRingLimits.hpp"
 #include <stdexcept>
 #include <string>
 
@@ -51,6 +52,22 @@ struct ServerConfig {
         check(write_pool_size,      "write_pool_size");
         check(file_job_pool_size,   "file_job_pool_size");
         check(connection_pool_size, "connection_pool_size");
+
+        // Ring dimensions. Without these checks a bad value surfaced only when a
+        // ring was being set up, as an error that blamed the kernel version.
+        if (!ring_limits::isValidQueueDepth(queue_depth)) {
+            throw std::invalid_argument(
+                "ServerConfig: queue_depth must be between 1 and " +
+                std::to_string(ring_limits::MAX_QUEUE_DEPTH) + ", got " +
+                std::to_string(queue_depth));
+        }
+        if (!ring_limits::isValidBufferRingCount(buffer_ring_count)) {
+            throw std::invalid_argument(
+                "ServerConfig: buffer_ring_count must be a power of two between 1 and " +
+                std::to_string(ring_limits::MAX_BUFFER_RING_ENTRIES) + ", got " +
+                std::to_string(buffer_ring_count));
+        }
+        check(buffer_size_bytes, "buffer_size_bytes");
     }
 };
 

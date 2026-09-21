@@ -3,6 +3,7 @@
  */
 
 #include "caduvelox/ring_buffer/BufferRingCoordinator.hpp"
+#include <cerrno>
 #include "caduvelox/logger/Logger.hpp"
 #include <sys/mman.h>
 #include <liburing.h>
@@ -38,7 +39,9 @@ bool BufferRingCoordinator::setupBufferRing(struct io_uring* ring) {
     buffer_block_ = ::mmap(nullptr, total_size, PROT_READ | PROT_WRITE, 
                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (buffer_block_ == MAP_FAILED) {
-        logger_.logError("Failed to allocate buffer block: " + std::string(strerror(errno)));
+        last_error_ = "could not allocate " + std::to_string(buf_count_) + " buffers of " +
+                      std::to_string(buf_size_) + " bytes: " + std::string(strerror(errno));
+        logger_.logError("BufferRingCoordinator: " + last_error_);
         buffer_block_ = nullptr;
         return false;
     }
@@ -50,7 +53,17 @@ bool BufferRingCoordinator::setupBufferRing(struct io_uring* ring) {
     int err = 0;
     buffer_ring_ = io_uring_setup_buf_ring(ring, buf_count_, buf_group_id_, 0, &err);
     if (!buffer_ring_ || err) {
-        logger_.logError("Failed to setup buffer ring: " + std::string(strerror(err)));
+        // liburing reports a negative errno here. Passing it to strerror()
+        // unnegated is what produced "Unknown error -22".
+        last_error_ = "io_uring_setup_buf_ring(" + std::to_string(buf_count_) +
+                      " entries) failed: " + std::string(strerror(-err));
+        if (err == -EINVAL) {
+            // Callers validate the dimensions first, so a remaining EINVAL most
+            // likely means the kernel has no provided-buffer rings. Only now is
+            // the kernel a plausible culprit.
+            last_error_ += " (provided-buffer rings need Linux 5.19 or later)";
+        }
+        logger_.logError("BufferRingCoordinator: " + last_error_);
         cleanupBufferRing();
         return false;
     }
