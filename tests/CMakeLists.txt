@@ -129,6 +129,8 @@ set(TEST_SOURCES
     # Percent-encoded paths and the traversal decoding invites (review item M12)
     path_decoding_test.cpp
     url_decode_test.cpp
+    # What a rejected request gets told (review item M15)
+    malformed_request_response_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp

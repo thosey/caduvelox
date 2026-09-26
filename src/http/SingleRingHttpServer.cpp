@@ -497,8 +497,16 @@ void HttpConnectionJob::handleDataReceived(const char* data, ssize_t len) {
 
     // Check buffer size limit
     if (request_buffer_.size() + len > max_request_size_) {
-        Logger::getInstance().logError("HttpConnectionJob: Request too large, closing connection");
-        closeConnection();
+        // Answer rather than close silently, and say which half is too big: if the
+        // blank line ending the header section has not arrived, it is the headers,
+        // otherwise it is the body. Best effort -- a terminator could straddle the
+        // boundary between what is buffered and what just arrived -- but it is
+        // right in every case that matters, and either answer beats none.
+        if (request_buffer_.find("\r\n\r\n") == std::string::npos) {
+            sendErrorAndClose(431, "Request Header Fields Too Large");
+        } else {
+            sendErrorAndClose(413, "Content Too Large");
+        }
         return;
     }
 
@@ -579,10 +587,46 @@ void HttpConnectionJob::processHttpRequests() {
         return;
     }
 
-    // BadRequest - malformed input, close connection
-    Logger::getInstance().logError("HttpConnectionJob: Malformed HTTP request, closing connection fd=" +
-                                 std::to_string(client_fd_));
-    closeConnection();
+    // BadRequest - malformed input. Answer 400 before closing: this used to be a
+    // bare close, which to a client is indistinguishable from a network fault.
+    sendErrorAndClose(400, "Bad Request");
+}
+
+// Answer a request being refused, then close the connection.
+//
+// Parse failures used to log and close with nothing sent. Since the parser became
+// strict that is the response to a great many deliberate rejections -- a field
+// line without a colon, whitespace before one, an obs-fold continuation, a bare
+// LF in a value, a bad version, a contradictory Content-Length, any
+// Transfer-Encoding -- and every one of them looked like the network breaking.
+// RFC 9112 section 3 asks for the status first.
+//
+// This response is the last thing on the connection, by necessity rather than
+// choice: once framing is untrustworthy the stream is not known to be at a
+// request boundary, so anything already buffered is dropped instead of parsed --
+// an attacker would otherwise choose what came next. Clearing keep_alive_ makes
+// sendResponse() advertise "connection: close" and onResponseComplete() tear the
+// connection down once the bytes are away.
+void HttpConnectionJob::sendErrorAndClose(int status_code, const std::string& reason) {
+    Logger::getInstance().logError("HttpConnectionJob: refusing request fd=" +
+                                   std::to_string(client_fd_) + ": " +
+                                   std::to_string(status_code) + " " + reason);
+
+    keep_alive_ = false;
+    advertise_keep_alive_ = false;
+    request_buffer_.clear();
+
+    if (client_fd_ < 0 || response_in_flight_) {
+        // Nothing can be written right now, so skip straight to teardown.
+        closeConnection();
+        return;
+    }
+
+    HttpResponse res;
+    res.setStatus(status_code, reason);
+    res.setHeader("content-type", "text/plain");
+    res.setBody(reason);
+    sendResponse(std::move(res));
 }
 
 void HttpConnectionJob::onResponseComplete(bool keep_alive) {

@@ -225,6 +225,9 @@ private:
     // Called when the response currently on the wire has finished (or failed).
     // `keep_alive` is that request's decision, captured at dispatch time.
     void onResponseComplete(bool keep_alive);
+    // Answer a refused request with `status_code`, then close. The response is
+    // necessarily the last one on this connection -- see the note in the .cpp.
+    void sendErrorAndClose(int status_code, const std::string& reason);
     void closeConnection();
     bool shouldKeepAlive(const HttpRequest& request) const;
     void continueReading();
