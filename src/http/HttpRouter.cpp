@@ -1,4 +1,5 @@
 #include "caduvelox/http/HttpRouter.hpp"
+#include "caduvelox/http/UrlDecode.hpp"
 
 namespace caduvelox {
 
@@ -109,6 +110,22 @@ void HttpRouter::dispatch(const HttpRequest& req, HttpResponse& res) const {
         return;
     }
 
+    // Percent-decode before matching, so a route and a capture see the path the
+    // client meant: "/files/a%20b.txt" is a request for the file "a b.txt", and
+    // without this it could not be served at all. Segments are decoded
+    // individually -- see UrlDecode.hpp for why, and for what is refused.
+    //
+    // Skipped entirely when there is no escape to expand, which is the usual
+    // case: then the raw path already is the decoded path.
+    std::string decoded;
+    if (route_path->find('%') != std::string::npos) {
+        if (!url::decodePath(*route_path, decoded)) {
+            handle_bad_request(res);
+            return;
+        }
+        route_path = &decoded;
+    }
+
     for (const auto& route : routes_) {
         if (route.method != "ALL" && route.method != req.method) continue;
         
@@ -162,6 +179,14 @@ void HttpRouter::fallback_to_default_headers(HttpResponse& res) const {
     if (res.getHeader("content-type").empty() && res.file_path.empty()) {
         res.setHeader("content-type", "text/plain");
     }
+}
+
+void HttpRouter::handle_bad_request(HttpResponse& res) const {
+    // The path could not be decoded: a broken escape, or one that would have
+    // manufactured a separator or a parent-directory step.
+    res.setStatus(400, "Bad Request");
+    res.setBody("Bad Request");
+    res.setHeader("content-type", "text/plain");
 }
 
 void HttpRouter::handle_uri_too_long(HttpResponse& res) const {

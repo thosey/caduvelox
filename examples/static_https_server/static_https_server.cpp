@@ -29,6 +29,7 @@
  */
 
 #include "caduvelox/http/HttpServer.hpp"
+#include "caduvelox/http/UrlDecode.hpp"
 #include "caduvelox/http/HttpTypes.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
 #include "caduvelox/logger/FileLogger.hpp"
@@ -165,11 +166,24 @@ int main(int argc, char** argv) {
         // Serve files under /files/<path>
         https_server->addRoute("GET", R"(^/files/(.+)$)", [docroot](const HttpRequest& req, HttpResponse& res){
             // Extract path from request (e.g., /files/test.txt -> test.txt).
-            // req.path is the raw request-target, so stop at the query string:
-            // "/files/app.js?v=3" names app.js. The router matches without the
-            // query, but anything that re-reads req.path has to strip it too.
-            const size_t query = req.path.find('?');
-            std::string path = req.path.substr(7, query == std::string::npos ? std::string::npos : query - 7);
+            //
+            // The router matched on the decoded path with the query removed, but
+            // req.path is still the raw request-target, so derive the filename the
+            // same way the router did: drop the query, percent-decode, then strip
+            // the "/files/" prefix. Without the decode, a browser asking for
+            // "a%20b.txt" would look for a file with "%20" in its name.
+            //
+            // A capture would arrive already decoded, but HttpServer has no
+            // capture-taking addRoute.
+            std::string target = req.path.substr(0, req.path.find('?'));
+            std::string decoded;
+            if (!caduvelox::url::decodePath(target, decoded) || decoded.size() < 7) {
+                // The router refuses these before a handler runs; belt and braces.
+                res.status_code = 400;
+                res.body = "400 Bad Request\n";
+                return;
+            }
+            std::string path = decoded.substr(7);
             
             // Prevent path traversal
             if (path.find("..") != std::string::npos || path.empty() || path[0] == '/') {

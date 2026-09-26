@@ -67,8 +67,17 @@ class HttpRouter {
     //
     // Routes match the path only -- the request-target up to the first '?' -- so
     // a query string never stops a route matching and never leaks into a
-    // capture. req.path is passed to the handler unchanged. A path longer than
-    // MAX_ROUTABLE_PATH is answered 414 without running any regex.
+    // capture. A path longer than MAX_ROUTABLE_PATH is answered 414 without
+    // running any regex.
+    //
+    // The path is percent-decoded before matching, segment by segment, so
+    // captures carry the name the client meant: a request for "/files/a%20b.txt"
+    // captures "a b.txt". A path whose escapes are malformed, or which would
+    // decode to a '/' or a ".." segment, is answered 400 -- see UrlDecode.hpp.
+    //
+    // req.path itself is untouched: it stays the raw request-target, query and
+    // escapes included. Take the decoded value from the capture, not from
+    // req.path.
     void dispatch(const HttpRequest& req, HttpResponse& res) const;
 
   private:
@@ -77,6 +86,7 @@ class HttpRouter {
     void fallback_to_default_headers(HttpResponse& res) const;
     void handle_not_found(HttpResponse& res) const;
     void handle_uri_too_long(HttpResponse& res) const;
+    void handle_bad_request(HttpResponse& res) const;
 };
 
 } // namespace caduvelox

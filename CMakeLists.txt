@@ -50,6 +50,7 @@ add_library(caduvelox
     src/http/HttpParser.cpp
     src/http/HttpRouter.cpp
     src/http/HttpResponseWriter.cpp     # The one place a response head becomes bytes
+    src/http/UrlDecode.cpp              # Percent-decoding for request paths
     src/http/HttpServer.cpp             # Multi-ring coordinator (public API)
     src/http/SingleRingHttpServer.cpp   # Internal single-ring implementation
     src/http/HttpConnectionRecvHandler.cpp
