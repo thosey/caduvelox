@@ -57,6 +57,19 @@ public:
                   HttpHandler handler);
 
     /**
+     * Add a route whose handler receives the regex captures.
+     *
+     * The router percent-decodes the path before matching, so a capture arrives
+     * decoded and without the query string -- which is where a handler should
+     * take a filename from. Without this, a multi-ring application had to
+     * re-derive it from req.path, stripping the query and decoding by hand.
+     *
+     * Must be called before listenKTLS().
+     */
+    void addRouteWithCaptures(const std::string& method, const std::string& path_pattern,
+                              HttpHandlerWithCaptures handler);
+
+    /**
      * Start HTTPS server with KTLS on specified port
      * Creates listening socket and starts accepting connections
      * @return true on success, false on failure

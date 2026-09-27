@@ -101,6 +101,11 @@ void HttpServer::addRoute(const std::string& method, const std::string& path_pat
     router_.addRoute(method, path_pattern, std::move(handler));
 }
 
+void HttpServer::addRouteWithCaptures(const std::string& method, const std::string& path_pattern,
+                                      HttpHandlerWithCaptures handler) {
+    router_.addRouteWithCaptures(method, path_pattern, std::move(handler));
+}
+
 bool HttpServer::listenKTLS(int port, const std::string& cert_path, 
                                       const std::string& key_path,
                                       const std::string& bind_addr) {

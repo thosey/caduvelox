@@ -133,6 +133,8 @@ set(TEST_SOURCES
     malformed_request_response_test.cpp
     # What AsyncLogger costs, and that batching lost nothing (review item M14)
     async_logger_cost_test.cpp
+    # Routing through the public multi-ring HttpServer (review item L17)
+    http_server_route_api_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp

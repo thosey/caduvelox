@@ -29,7 +29,6 @@
  */
 
 #include "caduvelox/http/HttpServer.hpp"
-#include "caduvelox/http/UrlDecode.hpp"
 #include "caduvelox/http/HttpTypes.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
 #include "caduvelox/logger/FileLogger.hpp"
@@ -164,26 +163,14 @@ int main(int argc, char** argv) {
         });
 
         // Serve files under /files/<path>
-        https_server->addRoute("GET", R"(^/files/(.+)$)", [docroot](const HttpRequest& req, HttpResponse& res){
-            // Extract path from request (e.g., /files/test.txt -> test.txt).
-            //
-            // The router matched on the decoded path with the query removed, but
-            // req.path is still the raw request-target, so derive the filename the
-            // same way the router did: drop the query, percent-decode, then strip
-            // the "/files/" prefix. Without the decode, a browser asking for
-            // "a%20b.txt" would look for a file with "%20" in its name.
-            //
-            // A capture would arrive already decoded, but HttpServer has no
-            // capture-taking addRoute.
-            std::string target = req.path.substr(0, req.path.find('?'));
-            std::string decoded;
-            if (!caduvelox::url::decodePath(target, decoded) || decoded.size() < 7) {
-                // The router refuses these before a handler runs; belt and braces.
-                res.status_code = 400;
-                res.body = "400 Bad Request\n";
-                return;
-            }
-            std::string path = decoded.substr(7);
+        https_server->addRouteWithCaptures("GET", R"(^/files/(.+)$)",
+            [docroot](const HttpRequest& req, HttpResponse& res, const std::smatch& m){
+            (void)req;
+            // The capture arrives percent-decoded and with the query string already
+            // removed, so "/files/a%20b.txt?v=3" gives "a b.txt". Taking it from
+            // req.path instead would mean stripping the query and decoding by hand,
+            // and getting either wrong means looking for the wrong file.
+            std::string path = m[1].str();
             
             // Prevent path traversal
             if (path.find("..") != std::string::npos || path.empty() || path[0] == '/') {
