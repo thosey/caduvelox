@@ -27,12 +27,27 @@ namespace caduvelox {
  *     Above all this means no CR or LF, either of which lets a value or the
  *     status text start a header line of its own.
  *   - The status code must be 100-599.
+ *   - Content-Length is omitted entirely for a status that cannot carry a body
+ *     (see status_allows_body); it used to be written on every response, 204
+ *     included.
+ *   - An empty status_text is filled in from the status code. The two are
+ *     independent public fields, so `res.status_code = 404` alone used to emit
+ *     "HTTP/1.1 404 OK".
  *
  * @param content_length Length of the body that will follow the head.
  * @return false if the response cannot be written safely; `out` is then
  *         unspecified, and the caller should send fallback_error_response().
  */
 bool build_response_head(const HttpResponse& res, uint64_t content_length, std::string& out);
+
+/**
+ * May a response with this status carry a body?
+ *
+ * No for 1xx, 204 and 304. RFC 9110 section 8.6 forbids Content-Length on a 204,
+ * and none of these may have a body at all -- so a caller must not append one
+ * either, or the bytes would be read as the start of the next response.
+ */
+bool status_allows_body(int status_code);
 
 /**
  * A fixed, known-good 500, for when build_response_head() refuses a response.

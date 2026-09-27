@@ -109,16 +109,26 @@ TEST(ResponseHeadWriter, RefusesOutOfRangeStatusCodes) {
     }
 }
 
-TEST(ResponseHeadWriter, RefusesLineBreaksInTheReasonPhraseButAllowsItEmpty) {
+// Behaviour change (review item L16). This used to assert that an empty phrase was
+// written out empty: "HTTP/1.1 200 \r\n". An empty status_text now means "derive
+// the phrase from the code", because the two fields are independent and a handler
+// setting only status_code was emitting the previous phrase -- "HTTP/1.1 404 OK".
+//
+// The cost of that choice: an empty reason phrase is legal (RFC 9112 section 4)
+// and can no longer be sent. Deriving a correct phrase is worth more than the
+// ability to send none.
+TEST(ResponseHeadWriter, RefusesLineBreaksInTheReasonPhraseAndDerivesAnEmptyOne) {
     HttpResponse bad;
     bad.status_text = "OK\r\nx: y";
     std::string out;
     EXPECT_FALSE(build_response_head(bad, 0, out));
 
     HttpResponse empty;
+    empty.status_code = 404;
     empty.status_text = "";
     ASSERT_TRUE(build_response_head(empty, 0, out));
-    EXPECT_EQ(out.rfind("HTTP/1.1 200 \r\n", 0), 0u) << out;
+    EXPECT_EQ(out.rfind("HTTP/1.1 404 Not Found\r\n", 0), 0u)
+        << "an empty phrase should be filled in from the code. Got:\n" << out;
 }
 
 TEST(ResponseHeadWriter, FallbackIsAValidCompleteResponse) {

@@ -15,7 +15,11 @@ std::string read_header(const HeaderMap &headers, const std::string &name);
  */
 struct HttpResponse {
     int status_code = 200;
-    std::string status_text = "OK";
+    // Empty means "derive it from status_code when the response is written". The
+    // two fields are independent, and only setStatus() keeps them in step, so a
+    // handler writing `res.status_code = 404` used to emit "HTTP/1.1 404 OK".
+    // Defaulting to empty makes that case right instead of wrong.
+    std::string status_text;
     std::unordered_map<std::string, std::string> headers;
     std::string file_path;
     std::string body;
@@ -100,20 +104,20 @@ struct HttpResponse {
         // Content-Type will be set based on file extension by the server
     }
 
-private:
-    static std::string lowercase(const std::string &s) {
-        std::string out = s;
-        std::transform(out.begin(), out.end(), out.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return out;
-    }
-
+    /**
+     * The reason phrase for a status code -- "Not Found" for 404.
+     *
+     * Public because the response writer uses it to fill in an empty status_text.
+     * An unknown code gets "Unknown"; the phrase is advisory (RFC 9112 section 4),
+     * so anything printable will do.
+     */
     static std::string getDefaultStatusText(int code) {
         switch (code) {
             case 200: return "OK";
             case 201: return "Created";
             case 202: return "Accepted";
             case 204: return "No Content";
+            case 206: return "Partial Content";
             case 301: return "Moved Permanently";
             case 302: return "Found";
             case 304: return "Not Modified";
@@ -123,10 +127,13 @@ private:
             case 404: return "Not Found";
             case 405: return "Method Not Allowed";
             case 409: return "Conflict";
-            case 413: return "Payload Too Large";
+            case 413: return "Content Too Large";
+            case 414: return "URI Too Long";
+            case 416: return "Range Not Satisfiable";
             case 415: return "Unsupported Media Type";
             case 422: return "Unprocessable Entity";
             case 429: return "Too Many Requests";
+            case 431: return "Request Header Fields Too Large";
             case 500: return "Internal Server Error";
             case 501: return "Not Implemented";
             case 502: return "Bad Gateway";
@@ -135,6 +142,15 @@ private:
             default: return "Unknown";
         }
     }
+
+private:
+    static std::string lowercase(const std::string &s) {
+        std::string out = s;
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return out;
+    }
+
 };
 
 } // namespace caduvelox

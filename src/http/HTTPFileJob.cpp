@@ -63,7 +63,11 @@ void HTTPFileJob::start(Server& server) {
     openFile();
     
     if (file_fd_ < 0) {
-        sendError(server, 404, "File not found");
+        if (range_not_satisfiable_size_.has_value()) {
+            sendError(server, 416, "Range Not Satisfiable");
+        } else {
+            sendError(server, 404, "File not found");
+        }
         return;
     }
     
@@ -123,9 +127,18 @@ void HTTPFileJob::openFile() {
     
     file_size_ = st.st_size;
     
-    // Validate range if specified
+    // Validate range if specified.
+    //
+    // This used to fall through to the same 404 as a missing file, telling a
+    // client the resource does not exist when it does. RFC 9110 section 14.4 asks
+    // for 416, and for Content-Range to carry the real length so a client
+    // resuming a transfer can correct itself. Remembering the size here is what
+    // lets start() tell the two refusals apart.
     if (offset_ > file_size_) {
-        Logger::getInstance().logError("HTTPFileJob: Offset beyond file size");
+        Logger::getInstance().logError("HTTPFileJob: range starts past the end of " + file_path_ +
+                                       " (offset=" + std::to_string(offset_) +
+                                       ", size=" + std::to_string(file_size_) + ")");
+        range_not_satisfiable_size_ = file_size_;
         close(file_fd_);
         file_fd_ = -1;
         return;
@@ -324,6 +337,12 @@ void HTTPFileJob::sendError(Server& server, int status_code, const std::string& 
     HttpResponse error_response;
     error_response.setStatus(status_code, message);
     error_response.headers["content-type"] = "text/plain";
+
+    // A 416 says what the satisfiable range would have been: "bytes */<size>".
+    if (range_not_satisfiable_size_.has_value()) {
+        error_response.headers["content-range"] =
+            "bytes */" + std::to_string(*range_not_satisfiable_size_);
+    }
 
     // start() can get here before startSendingHeaders() has normalized anything.
     response_.normalizeHeaders();

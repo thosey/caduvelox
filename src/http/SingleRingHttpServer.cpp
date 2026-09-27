@@ -756,7 +756,11 @@ void HttpConnectionJob::sendResponse(HttpResponse response) {
     // correctly-cased one went out even when it did not match the body.
     std::string response_str;
     if (build_response_head(response, response.body.size(), response_str)) {
-        response_str += response.body;
+        // A 1xx, 204 or 304 carries no body. Appending one would put bytes on the
+        // wire that the client reads as the start of the next response.
+        if (status_allows_body(response.status_code)) {
+            response_str += response.body;
+        }
     } else {
         Logger::getInstance().logError(
             "HttpConnectionJob: response cannot be written safely, sending 500 fd=" +

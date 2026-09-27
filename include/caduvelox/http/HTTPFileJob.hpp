@@ -2,6 +2,7 @@
 
 #include "caduvelox/http/HttpTypes.hpp"
 #include <functional>
+#include <optional>
 #include <memory>
 #include <string>
 
@@ -91,6 +92,11 @@ private:
     HttpResponse response_;
     
     int file_fd_;
+    // Set when openFile() refused because the requested range starts past the end
+    // of the file: the value is the file's size, which a 416 reports back so a
+    // resuming client learns the real length. Distinguishes that refusal from a
+    // file that is simply not there, which is otherwise the same (file_fd_ < 0).
+    std::optional<uint64_t> range_not_satisfiable_size_;
     uint64_t file_size_;
     std::unique_ptr<char[]> header_data_;
     size_t header_size_;

@@ -26,6 +26,11 @@ std::string lowercase(std::string_view s) {
 
 }  // namespace
 
+bool status_allows_body(int status_code) {
+    if (status_code >= 100 && status_code < 200) return false;
+    return status_code != 204 && status_code != 304;
+}
+
 bool build_response_head(const HttpResponse& res, uint64_t content_length, std::string& out) {
     if (res.status_code < 100 || res.status_code > 599) return false;
     if (!is_valid_reason_phrase(res.status_text)) return false;
@@ -51,7 +56,10 @@ bool build_response_head(const HttpResponse& res, uint64_t content_length, std::
     out += "HTTP/1.1 ";
     out += std::to_string(res.status_code);
     out += ' ';
-    out += res.status_text;
+    // An empty phrase is filled in from the code, so a handler that sets
+    // status_code without setStatus() does not emit the previous phrase.
+    out += res.status_text.empty() ? HttpResponse::getDefaultStatusText(res.status_code)
+                                   : res.status_text;
     out += "\r\n";
     for (const auto& [name, value] : fields) {
         out += name;
@@ -59,9 +67,12 @@ bool build_response_head(const HttpResponse& res, uint64_t content_length, std::
         out += *value;
         out += "\r\n";
     }
-    out += "content-length: ";
-    out += std::to_string(content_length);
-    out += "\r\n\r\n";
+    if (status_allows_body(res.status_code)) {
+        out += "content-length: ";
+        out += std::to_string(content_length);
+        out += "\r\n";
+    }
+    out += "\r\n";
     return true;
 }
 
