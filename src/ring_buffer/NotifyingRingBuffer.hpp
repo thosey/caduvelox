@@ -2,6 +2,8 @@
 
 #include "MPMCRingBuffer.hpp"
 #include <atomic>
+#include <chrono>
+#include <semaphore>
 
 /**
  * A decorator around MPMCRingBuffer that adds efficient blocking/notification
@@ -20,6 +22,15 @@ template<typename T, size_t N>
 class NotifyingRingBuffer {
 public:
     static_assert((N & (N - 1)) == 0, "Buffer size must be a power of 2");
+
+    // Queue depth at which a producer signals the consumer. Below it, the
+    // consumer's bounded park picks the items up instead. See wakeIfWorthIt().
+    static constexpr size_t NOTIFY_WATERMARK = 16;
+
+    // Longest a consumer parks before looking again. This is the latency bound on
+    // an item that never reaches the watermark -- a single log line on an
+    // otherwise idle server.
+    static constexpr std::chrono::milliseconds MAX_PARK{1};
     
     NotifyingRingBuffer() = default;
     
@@ -39,9 +50,7 @@ public:
     bool enqueue(T&& item) {
         bool success = ring_.enqueue(std::move(item));
         if (success) {
-            // Notify waiting consumers that data is available
-            has_data_.store(true, std::memory_order_release);
-            has_data_.notify_one();
+            wakeIfWorthIt();
         }
         return success;
     }
@@ -56,9 +65,7 @@ public:
     bool enqueue(const T& item) {
         bool success = ring_.enqueue(item);
         if (success) {
-            // Notify waiting consumers that data is available
-            has_data_.store(true, std::memory_order_release);
-            has_data_.notify_one();
+            wakeIfWorthIt();
         }
         return success;
     }
@@ -71,23 +78,28 @@ public:
      * @return true if dequeued successfully, false if shutdown was signaled
      */
     bool dequeue(T& item) {
-        if (ring_.dequeue(item)) {
-            return true;
-        }
-        
-        while (!shutdown_.load(std::memory_order_acquire)) {
-            has_data_.wait(false, std::memory_order_acquire);
-            
-            if (shutdown_.load(std::memory_order_acquire)) {
-                return false;
-            }
+        for (;;) {
+            // Drain without sleeping for as long as there is anything to take, so
+            // one wake-up serves a whole batch.
             if (ring_.dequeue(item)) {
                 return true;
             }
-            has_data_.store(false, std::memory_order_release);
+            if (shutdown_.load(std::memory_order_acquire)) {
+                return false;
+            }
+
+            // Park, but only for a bounded time. Producers deliberately do not
+            // signal every item (see wakeIfWorthIt), so the timeout is what
+            // collects the last few of a batch -- and it means a missed signal
+            // costs latency, never a lost item.
+            sem_.try_acquire_for(MAX_PARK);
+
+            if (shutdown_.load(std::memory_order_acquire)) {
+                // Take anything still queued before reporting shutdown; the
+                // caller drains with try_dequeue afterwards either way.
+                return ring_.dequeue(item);
+            }
         }
-        
-        return false; // Shutdown signaled
     }
     
     /**
@@ -96,7 +108,7 @@ public:
      */
     void shutdown() {
         shutdown_.store(true, std::memory_order_release);
-        notify_all();
+        notify_all();  // wake the consumer immediately; do not make it wait out MAX_PARK
     }
     
     /**
@@ -115,12 +127,34 @@ public:
      * Useful for shutdown scenarios where you want to wake sleeping threads.
      */
     void notify_all() {
-        has_data_.store(true, std::memory_order_release);
-        has_data_.notify_all();
+        sem_.release();
     }
 
 private:
+    /**
+     * Wake the consumer only when a batch has built up.
+     *
+     * Signalling every item is what made this expensive: the consumer drains in
+     * well under a microsecond, so it was parked again by the time the next item
+     * arrived, and every item cost a futex wake plus a futex wait. Measured
+     * through AsyncLogger at seven log lines per HTTP request, that was +19 us of
+     * CPU per request -- more than logging synchronously.
+     *
+     * Waking once per batch trades a little latency for those syscalls, and the
+     * consumer's bounded park (MAX_PARK) is what bounds the trade: an item that
+     * does not reach the watermark waits at most that long. Semaphore tokens also
+     * persist, unlike a condition-variable signal, so a token released just as the
+     * consumer decides to park is still there when it does.
+     */
+    void wakeIfWorthIt() {
+        if (ring_.size_approx() >= NOTIFY_WATERMARK) {
+            sem_.release();
+        }
+    }
+
     MPMCRingBuffer<T, N> ring_;
-    std::atomic<bool> has_data_{false};
+    // Tokens can accumulate when producers outrun the consumer; a surplus token
+    // only costs one extra trip around the drain loop.
+    std::counting_semaphore<> sem_{0};
     std::atomic<bool> shutdown_{false};
 };

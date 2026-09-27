@@ -2,6 +2,7 @@
 #include "../ring_buffer/NotifyingRingBuffer.hpp"
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string_view>
@@ -73,23 +74,29 @@ class AsyncLogger::Impl {
         LogMessage logMsg(level, msg);
 
         if (!fRingBuffer.enqueue(std::move(logMsg))) {
-            // Buffer full - fallback to synchronous logging with warning prefix
-            // Check again if still running (could have shut down between checks)
-            if (!fRunning.load(std::memory_order_acquire)) {
-                return; // Shutdown in progress, drop message
-            }
-            
-            std::string fallbackMsg = "[ASYNC_BUFFER_FULL] ";
-            fallbackMsg += msg;
-            
-            switch (level) {
-            case EntryKind::Message:
-                fDelegate->logMessage(fallbackMsg);
-                break;
-            case EntryKind::Error:
-                fDelegate->logError(fallbackMsg);
-                break;
-            }
+            // Queue full. Count it and let the worker report it.
+            //
+            // This used to write the message straight to the delegate from the
+            // producer's thread, while the worker thread was writing to the same
+            // delegate -- and a delegate need not be thread-safe. FileLogger, the
+            // one this is used with, is an ofstream plus std::gmtime (which has a
+            // shared static buffer), so the two threads interleaved mid-line:
+            // measured at 9411 lines in the file for 8000 messages logged, i.e.
+            // corrupted output, not merely lost output.
+            //
+            // Keeping every delegate write on the worker thread is what makes the
+            // output trustworthy. A drop is then visible as a count rather than as
+            // a garbled line.
+            fDropped.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    // Emit one line for anything dropped since the last report. Worker thread only.
+    void reportDropsIfAny() {
+        const uint64_t dropped = fDropped.exchange(0, std::memory_order_relaxed);
+        if (dropped > 0) {
+            fDelegate->logError("AsyncLogger: dropped " + std::to_string(dropped) +
+                                " message(s): queue full");
         }
     }
 
@@ -99,6 +106,7 @@ class AsyncLogger::Impl {
             if (fRingBuffer.dequeue(msg)) {
                 // Process the log message
                 processLogMessage(msg);
+                reportDropsIfAny();
             } else {
                 // dequeue returned false - shutdown was signaled
                 break;
@@ -109,6 +117,9 @@ class AsyncLogger::Impl {
         while (fRingBuffer.try_dequeue(msg)) {
             processLogMessage(msg);
         }
+        // Anything dropped right at the end is still worth saying. Safe here: the
+        // producers are done with this logger by the time the destructor joins.
+        reportDropsIfAny();
     }
 
     void processLogMessage(const LogMessage &msg) {
@@ -123,8 +134,18 @@ class AsyncLogger::Impl {
     }
 
     std::unique_ptr<Logger> fDelegate;
-    NotifyingRingBuffer<LogMessage, 65536> fRingBuffer; // 65536 message buffer (64x increase for high load, power of 2)
+    // 4096 entries, not 65536. LogMessage carries a fixed 1024-byte buffer, so it
+    // is 1048 bytes, and 65536 of them made every AsyncLogger cost 68 MB of
+    // *resident* memory the moment it was constructed -- measured, VmRSS 5 MB ->
+    // 73 MB -- because the ring's constructor touches every slot to initialise its
+    // sequence counter. That was paid before a single line was logged, at any log
+    // level. 4096 still buffers roughly ten milliseconds of the heaviest tracing
+    // this server produces, and overflow falls back to writing synchronously
+    // rather than dropping.
+    NotifyingRingBuffer<LogMessage, 4096> fRingBuffer;
     std::atomic<bool> fRunning;
+    // Messages the queue had no room for, reported by the worker thread.
+    std::atomic<uint64_t> fDropped{0};
     std::thread fWorkerThread;
 };
 

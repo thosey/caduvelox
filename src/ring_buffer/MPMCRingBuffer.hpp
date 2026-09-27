@@ -83,6 +83,20 @@ class MPMCRingBuffer {
         return enqueue(std::move(copy));
     }
 
+    /**
+     * Roughly how many items are queued.
+     *
+     * Approximate on purpose: head_ and tail_ are read without synchronisation,
+     * so the answer can be stale either way the instant it is returned. Fine for
+     * deciding whether a batch is worth waking a consumer for; not for anything
+     * that needs an exact count.
+     */
+    size_t size_approx() const {
+        const size_t head = head_.load(std::memory_order_relaxed);
+        const size_t tail = tail_.load(std::memory_order_relaxed);
+        return head - tail;  // unsigned wraparound is consistent with the counters
+    }
+
     bool dequeue(T& item) {
         size_t pos = tail_.load(std::memory_order_relaxed);
         while(true) {
