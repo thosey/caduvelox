@@ -106,6 +106,19 @@ void HttpServer::addRouteWithCaptures(const std::string& method, const std::stri
     router_.addRouteWithCaptures(method, path_pattern, std::move(handler));
 }
 
+bool HttpServer::listen(int port, const std::string& bind_addr) {
+    if (!isStopped()) {
+        Logger::getInstance().logError("HttpServer: Server is not in Stopped state");
+        return false;
+    }
+
+    // Plain HTTP. This did not exist: the only public entry point was
+    // listenKTLS(), so a multi-ring server could not serve HTTP at all -- which is
+    // what a service behind a TLS-terminating proxy wants, and what
+    // examples/rest_api_server had been written against.
+    return startRings(port, bind_addr, /*use_ktls=*/false);
+}
+
 bool HttpServer::listenKTLS(int port, const std::string& cert_path, 
                                       const std::string& key_path,
                                       const std::string& bind_addr) {
@@ -121,7 +134,17 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
         return false;
     }
 
-    // Create service rings - each will have its own listening socket
+    return startRings(port, bind_addr, /*use_ktls=*/true);
+}
+
+// One listening socket per ring, all on the same port via SO_REUSEPORT, each with
+// its own SingleRingHttpServer sharing the router.
+//
+// Shared by listen() and listenKTLS(), which differ only in whether an accepted
+// connection starts a TLS handshake and whether an SSL context exists to hand
+// down. Copying this loop for the plain case would have been a second place for
+// ring setup to drift.
+bool HttpServer::startRings(int port, const std::string& bind_addr, bool use_ktls) {
     service_rings_.reserve(config_.num_rings);
     http_servers_.reserve(config_.num_rings);
 
@@ -131,13 +154,13 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
         auto ring = std::make_unique<ServiceRing>(i, cpu_id, config_.queue_depth,
                                                   config_.buffer_ring_count,
                                                   config_.buffer_size_bytes);
-        
+
         if (!ring->init()) {
             Logger::getInstance().logError("HttpServer: Failed to initialize service ring " + 
                                           std::to_string(i));
             return false;
         }
-        
+
         // Create listening socket with SO_REUSEPORT for this ring
         int server_fd = createServerSocket(port, bind_addr);
         if (server_fd < 0) {
@@ -145,46 +168,49 @@ bool HttpServer::listenKTLS(int port, const std::string& cert_path,
                                           std::to_string(i));
             return false;
         }
-        
+
         // Create internal SingleRingHttpServer for this ring
         // HTTP processing happens inline on io_uring thread for maximum performance
         auto http_server = std::make_unique<SingleRingHttpServer>(ring->getServer());
-        
+
         // Share the router (read-only after setup)
         http_server->setRouter(router_);
-        
-        // Set KTLS context (borrowed reference - parent HttpServer owns it)
-        http_server->setKTLSContext(ssl_ctx_, false);
+
+        // Set KTLS context (borrowed reference - parent HttpServer owns it).
+        // Null for a plain listener, which never starts a handshake.
+        if (use_ktls) {
+            http_server->setKTLSContext(ssl_ctx_, false);
+        }
 
         // Apply per-ring runtime config
         http_server->setKtlsHandshakeTimeoutMs(config_.ktls_handshake_timeout_ms);
         http_server->setIdleTimeoutMs(config_.idle_timeout_ms);
-        
+
         // Start listening on this ring's socket
         // We manually set the socket since we created it with SO_REUSEPORT
         // HttpServer will do the accept multishot on this fd
-        if (!http_server->listenOnFd(server_fd)) {
+        if (!http_server->listenOnFd(server_fd, use_ktls)) {
             Logger::getInstance().logError("HttpServer: Failed to start listening on ring " + 
                                           std::to_string(i));
             close(server_fd);
             return false;
         }
-        
+
         // Share the canonical server state so ring-local jobs can observe it.
         ring->bindToServerState(&state_);
 
         service_rings_.push_back(std::move(ring));
         http_servers_.push_back(std::move(http_server));
-        
+
         Logger::info("HttpServer: Ring " + std::to_string(i) + 
                                         " initialized and listening");
     }
 
     state_.store(ServerState::Running, std::memory_order_release);
-    
-    Logger::info("HttpServer: All " + std::to_string(config_.num_rings) + 
-                                    " rings listening on " + bind_addr + ":" + std::to_string(port));
-    
+
+    Logger::info("HttpServer: All " + std::to_string(config_.num_rings) + " rings listening on " +
+                 bind_addr + ":" + std::to_string(port) + (use_ktls ? " (HTTPS)" : " (HTTP)"));
+
     return true;
 }
 
@@ -309,8 +335,9 @@ int HttpServer::createServerSocket(int port, const std::string& bind_addr) {
         return -1;
     }
 
-    // Start listening
-    if (listen(server_fd, SOMAXCONN) < 0) {
+    // Start listening. Qualified: HttpServer::listen() would otherwise shadow the
+    // POSIX listen(2) being called here.
+    if (::listen(server_fd, SOMAXCONN) < 0) {
         Logger::getInstance().logError("HttpServer: Failed to listen: " + 
                                       std::string(strerror(errno)));
         close(server_fd);

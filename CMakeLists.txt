@@ -68,12 +68,17 @@ target_link_libraries(caduvelox
     OpenSSL::Crypto
 )
 
-# Examples are now in individual folders with their own CMakeLists.txt
-# Optionally add them as subdirectories (excluded from default build)
+# Examples live in individual folders with their own CMakeLists.txt.
+#
+# EXCLUDE_FROM_ALL used to be set as well as the option, so even -DBUILD_EXAMPLES=ON
+# did not build them with the default target -- and nothing else did either, which
+# is how examples/rest_api_server came to sit in the tree not compiling against an
+# API that had changed underneath it. The option is the gate; when it is on, the
+# examples build, and CI turns it on.
 option(BUILD_EXAMPLES "Build example applications" OFF)
 if(BUILD_EXAMPLES)
-    add_subdirectory(examples/static_https_server EXCLUDE_FROM_ALL)
-    add_subdirectory(examples/rest_api_server EXCLUDE_FROM_ALL)
+    add_subdirectory(examples/static_https_server)
+    add_subdirectory(examples/rest_api_server)
 endif()
 
 # Add tests

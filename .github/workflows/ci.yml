@@ -44,7 +44,7 @@ jobs:
           echo "liburing version: $(pkg-config --modversion liburing)"
           echo "liburing cflags: $(pkg-config --cflags liburing)"
           echo "liburing libs: $(pkg-config --libs liburing)"
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON
 
       - name: Build
         run: cmake --build build --config Release -j 2

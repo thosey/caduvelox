@@ -107,7 +107,12 @@ public:
      * @param server_fd Pre-created listening socket
      * @return true on success
      */
-    bool listenOnFd(int server_fd);
+    // Serve an already-bound, already-listening socket on this ring.
+    //
+    // `use_ktls` decides whether an accepted connection starts a TLS handshake.
+    // It used to be assumed true, which is why the multi-ring HttpServer could
+    // only ever offer HTTPS.
+    bool listenOnFd(int server_fd, bool use_ktls);
 
 private:
     Server& job_server_;

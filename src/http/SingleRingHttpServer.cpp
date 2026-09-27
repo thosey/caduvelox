@@ -1034,12 +1034,13 @@ void SingleRingHttpServer::setKTLSContext(SSL_CTX* ssl_ctx, bool take_ownership)
     owns_ssl_ctx_ = take_ownership;
 }
 
-bool SingleRingHttpServer::listenOnFd(int server_fd) {
+bool SingleRingHttpServer::listenOnFd(int server_fd, bool use_ktls) {
     server_fd_ = server_fd;
     running_ = true;
-    ktls_enabled_ = true;  // Assume KTLS if using this method
+    ktls_enabled_ = use_ktls;
 
-    Logger::info("HttpServer: Listening on fd=" + std::to_string(server_fd));
+    Logger::info("HttpServer: Listening on fd=" + std::to_string(server_fd) +
+                 (use_ktls ? " (kTLS)" : " (plain HTTP)"));
 
     installRingLocalHooks();
 

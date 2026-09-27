@@ -16,6 +16,7 @@
 
 #include "caduvelox/Server.hpp"
 #include "caduvelox/http/HttpServer.hpp"
+#include "caduvelox/ServerConfig.hpp"
 #include "caduvelox/http/HttpTypes.hpp"
 #include "caduvelox/logger/ConsoleLogger.hpp"
 #include <iostream>
@@ -31,7 +32,8 @@
 using namespace caduvelox;
 namespace fs = std::filesystem;
 
-static std::unique_ptr<Server> job_server;
+// HttpServer owns its service rings; there is no separate Server to hold. It used
+// to be constructed from one, which is why this example stopped compiling.
 static std::unique_ptr<HttpServer> http_server;
 
 // Simple JSON helpers (no external dependencies)
@@ -81,11 +83,6 @@ int main(int argc, char** argv) {
         Logger::setGlobalLogger(&console_logger);
 
         // Initialize job server
-        job_server = std::make_unique<Server>();
-        if (!job_server->init(256)) {
-            std::cerr << "Failed to initialize Server" << std::endl;
-            return 1;
-        }
 
         // Block signals in main thread and spawn a watcher thread using sigwait
         sigset_t set;
@@ -96,16 +93,15 @@ int main(int argc, char** argv) {
         std::thread([&]() {
             int sig = 0;
             if (sigwait(&set, &sig) == 0) {
-                if (job_server) job_server->stop();
+                if (http_server) http_server->stop();
             }
         }).detach();
 
-        // Initialize HTTP server
-        http_server = std::make_unique<HttpServer>(*job_server);
-        if (!http_server->listen(port)) {
-            std::cerr << "Failed to start HTTP server on port " << port << std::endl;
-            return 1;
-        }
+        // Initialize HTTP server. Routes are registered below and the listener is
+        // started afterwards: listen() copies the router into each ring, so a route
+        // added after it would never be seen.
+        ServerConfig cfg;
+        http_server = std::make_unique<HttpServer>(cfg);
 
         // Helper to add CORS headers to responses
         auto add_cors_headers = [](HttpResponse& res) {
@@ -433,13 +429,19 @@ int main(int argc, char** argv) {
 </html>)");
         });
 
+        // Every route is registered; now start accepting.
+        if (!http_server->listen(port)) {
+            std::cerr << "Failed to start HTTP server on port " << port << std::endl;
+            return 1;
+        }
+
         std::cout << "Listening on http://0.0.0.0:" << port << "\n";
         std::cout << "API documentation: http://localhost:" << port << "/\n";
         std::cout << "Data directory: " << fs::absolute(data_dir) << "\n";
         std::cout << "Press Ctrl+C to stop\n";
         // Run the server in a separate thread so we can handle signals cleanly
         std::thread server_thread([&]() {
-            job_server->run();
+            http_server->run();
         });
         
         // Wait for server thread to finish (sigwait thread triggers stop())
@@ -449,7 +451,6 @@ int main(int argc, char** argv) {
 
         // Clean up explicitly after the server stops
         if (http_server) http_server.reset();
-        if (job_server) job_server.reset();
 
         std::cout << "Shutdown complete" << std::endl;
         

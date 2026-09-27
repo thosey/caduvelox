@@ -70,6 +70,15 @@ public:
                               HttpHandlerWithCaptures handler);
 
     /**
+     * Start a plain HTTP server on the given port.
+     *
+     * One listening socket per ring, sharing the port via SO_REUSEPORT. Use this
+     * behind a proxy that terminates TLS; use listenKTLS() to terminate it here.
+     * @return true on success, false on failure
+     */
+    bool listen(int port, const std::string& bind_addr = "0.0.0.0");
+
+    /**
      * Start HTTPS server with KTLS on specified port
      * Creates listening socket and starts accepting connections
      * @return true on success, false on failure
@@ -115,6 +124,9 @@ public:
     bool isStopped() const { return getState() == ServerState::Stopped; }
 
 private:
+    // Shared by listen() and listenKTLS(): one socket and one
+    // SingleRingHttpServer per ring, differing only in whether TLS is terminated.
+    bool startRings(int port, const std::string& bind_addr, bool use_ktls);
     int createServerSocket(int port, const std::string& bind_addr);
 
     // Join every started ring thread. Idempotent (ServiceRing::join() checks joinable()),

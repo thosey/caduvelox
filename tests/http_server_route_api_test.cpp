@@ -148,4 +148,98 @@ TEST_F(HttpServerRouteApiTest, APlainRouteStillWorks) {
     EXPECT_EQ(bodyOf(response), "pong") << response;
 }
 
+// ---------------------------------------------------------------------------
+// Plain HTTP through the same class (review item M16)
+//
+// HttpServer offered only listenKTLS, so the public multi-ring class could not
+// serve HTTP at all -- which is what a service behind a TLS-terminating proxy
+// wants, and what examples/rest_api_server had been written against before it
+// stopped compiling.
+// ---------------------------------------------------------------------------
+
+class HttpServerPlainListenTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        static ConsoleLogger console_logger;
+        Logger::setGlobalLogger(&console_logger);
+        port_ = BASE_PORT + counter_++;
+    }
+
+    void TearDown() override {
+        if (server_) server_->stop();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    void startWithRings(int rings) {
+        ServerConfig cfg;
+        cfg.num_rings = rings;
+        server_ = std::make_unique<HttpServer>(cfg);
+        server_->addRoute("GET", "^/hello$", [](const HttpRequest&, HttpResponse& res) {
+            res.setBody("hi");
+        });
+        server_->addRouteWithCaptures("GET", R"(^/echo/(.+)$)",
+            [](const HttpRequest&, HttpResponse& res, const std::smatch& m) {
+                res.setBody(m[1].str());
+            });
+        ASSERT_TRUE(server_->listen(port_, "127.0.0.1"));
+        thread_ = std::thread([this] { server_->run(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+
+    // One request per connection, in the clear.
+    std::string get(const std::string& target) {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        EXPECT_GE(fd, 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port_);
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        EXPECT_EQ(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+        timeval tv{ .tv_sec = 5, .tv_usec = 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        const std::string req =
+            "GET " + target + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        ::send(fd, req.data(), req.size(), MSG_NOSIGNAL);
+        std::string out;
+        char buf[4096];
+        ssize_t n;
+        while ((n = ::recv(fd, buf, sizeof(buf), 0)) > 0) out.append(buf, static_cast<size_t>(n));
+        ::close(fd);
+        return out;
+    }
+
+    static constexpr uint16_t BASE_PORT = 18900;
+    static int counter_;
+    uint16_t port_ = 0;
+    std::unique_ptr<HttpServer> server_;
+    std::thread thread_;
+};
+
+int HttpServerPlainListenTest::counter_ = 0;
+
+TEST_F(HttpServerPlainListenTest, ServesPlainHttpOnOneRing) {
+    startWithRings(1);
+    const std::string r = get("/hello");
+    EXPECT_NE(r.find("HTTP/1.1 200"), std::string::npos) << r;
+    EXPECT_EQ(bodyOf(r), "hi") << r;
+}
+
+TEST_F(HttpServerPlainListenTest, ACaptureStillArrivesDecodedOverPlainHttp) {
+    startWithRings(1);
+    const std::string r = get("/echo/a%20b?x=1");
+    EXPECT_EQ(bodyOf(r), "a b") << r;
+}
+
+// Every ring binds the same port with SO_REUSEPORT; each new connection may land
+// on any of them, so all of these have to be answered.
+TEST_F(HttpServerPlainListenTest, ServesPlainHttpAcrossSeveralRings) {
+    startWithRings(3);
+    for (int i = 0; i < 12; ++i) {
+        const std::string r = get("/hello");
+        ASSERT_NE(r.find("HTTP/1.1 200"), std::string::npos) << "request " << i << ":\n" << r;
+        ASSERT_EQ(bodyOf(r), "hi") << "request " << i;
+    }
+}
+
 }  // namespace
