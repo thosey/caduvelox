@@ -130,6 +130,8 @@ set(TEST_SOURCES
     http_server_route_api_test.cpp
     # Response status phrases, bodiless statuses, ranges past EOF (L13, L15, L16)
     response_status_conformance_test.cpp
+    # WriteJob against a regular file (review item L12)
+    write_job_file_offset_test.cpp
     server_stop_thread_safety_test.cpp
     # Pipelined response ordering (review item C6)
     http_response_ordering_test.cpp

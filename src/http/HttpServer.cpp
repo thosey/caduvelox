@@ -1,4 +1,5 @@
 #include "caduvelox/http/HttpServer.hpp"
+#include "caduvelox/http/PortRange.hpp"
 #include "caduvelox/jobs/KTLSContextHelper.hpp"
 #include "caduvelox/jobs/KTLSJob.hpp"
 #include "caduvelox/jobs/AcceptJob.hpp"
@@ -291,6 +292,15 @@ void HttpServer::stop() {
 }
 
 int HttpServer::createServerSocket(int port, const std::string& bind_addr) {
+    // The multi-ring path never checked this, and sin_port is 16 bits: htons()
+    // truncated anything out of range and the server bound a port nobody asked
+    // for. Now that listen() is public as well as listenKTLS(), that is reachable
+    // from the ordinary entry point.
+    if (!port::isValid(port)) {
+        Logger::getInstance().logError("HttpServer: " + port::rejection(port));
+        return -1;
+    }
+
     int server_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (server_fd < 0) {
         Logger::getInstance().logError("HttpServer: Failed to create socket: " + 

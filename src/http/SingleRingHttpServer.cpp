@@ -1,4 +1,5 @@
 #include "caduvelox/http/SingleRingHttpServer.hpp"
+#include "caduvelox/http/PortRange.hpp"
 #include "caduvelox/http/HTTPFileJob.hpp"
 #include "caduvelox/http/HttpResponseWriter.hpp"
 #include "caduvelox/jobs/KTLSJob.hpp"
@@ -57,10 +58,8 @@ bool SingleRingHttpServer::listen(int port, const std::string& bind_addr) {
         return false;
     }
 
-    // Validate port range
-    if (port < 0 || port > 65535) {
-        Logger::getInstance().logError("HttpServer: Invalid port " + std::to_string(port) + 
-                                     " (must be between 0 and 65535)");
+    if (!port::isValid(port)) {
+        Logger::getInstance().logError("HttpServer: " + port::rejection(port));
         return false;
     }
 
@@ -86,10 +85,8 @@ bool SingleRingHttpServer::listenKTLS(int port, const std::string& cert_path, co
         return false;
     }
 
-    // Validate port range
-    if (port < 0 || port > 65535) {
-        Logger::getInstance().logError("HttpServer: Invalid port " + std::to_string(port) + 
-                                     " (must be between 0 and 65535)");
+    if (!port::isValid(port)) {
+        Logger::getInstance().logError("HttpServer: " + port::rejection(port));
         return false;
     }
 

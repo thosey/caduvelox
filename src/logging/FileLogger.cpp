@@ -1,6 +1,7 @@
 #include "caduvelox/logger/FileLogger.hpp"
 #include <iostream>
 #include <chrono>
+#include <ctime>
 #include <iomanip>
 
 namespace caduvelox {
@@ -26,8 +27,15 @@ void FileLogger::logMessage(std::string_view msg) {
         auto time = std::chrono::system_clock::to_time_t(now);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()) % 1000;
-        
-        file_ << std::put_time(std::gmtime(&time), "%Y-%m-%d %H:%M:%S")
+
+        // gmtime_r, not gmtime: gmtime returns a pointer to a shared static tm, so
+        // two threads formatting a timestamp at once corrupt each other's -- even
+        // when each owns its own FileLogger and is otherwise using it correctly, as
+        // the "NOT thread-safe" note on the class intends.
+        struct tm tm_buf{};
+        gmtime_r(&time, &tm_buf);
+
+        file_ << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S")
               << '.' << std::setfill('0') << std::setw(3) << ms.count()
               << " [INFO] " << msg << std::endl;
         
@@ -44,8 +52,15 @@ void FileLogger::logError(std::string_view msg) {
         auto time = std::chrono::system_clock::to_time_t(now);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()) % 1000;
-        
-        file_ << std::put_time(std::gmtime(&time), "%Y-%m-%d %H:%M:%S")
+
+        // gmtime_r, not gmtime: gmtime returns a pointer to a shared static tm, so
+        // two threads formatting a timestamp at once corrupt each other's -- even
+        // when each owns its own FileLogger and is otherwise using it correctly, as
+        // the "NOT thread-safe" note on the class intends.
+        struct tm tm_buf{};
+        gmtime_r(&time, &tm_buf);
+
+        file_ << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S")
               << '.' << std::setfill('0') << std::setw(3) << ms.count()
               << " [ERROR] " << msg << std::endl;
         

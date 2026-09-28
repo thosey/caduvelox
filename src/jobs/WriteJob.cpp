@@ -106,7 +106,13 @@ void WriteJob::start(Server& server) {
 void WriteJob::prepareSqe(struct io_uring_sqe* sqe) {
     const char* remaining_data = data_ptr_ + bytes_written_;
     size_t remaining_length = total_length_ - bytes_written_;
-    io_uring_prep_write(sqe, fd_, remaining_data, remaining_length, 0);
+    // Offset -1 means "use and advance the file position", i.e. write(2) rather
+    // than pwrite(2). This used to pass 0, which is ignored for a socket but wrong
+    // for the regular files this class documents itself as accepting: every write
+    // landed at the start of the file, so the resubmission after a partial write
+    // overwrote what it had just sent instead of continuing from it.
+    io_uring_prep_write(sqe, fd_, remaining_data, remaining_length,
+                        static_cast<__u64>(-1));
 }
 
 /**

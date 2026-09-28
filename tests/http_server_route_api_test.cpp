@@ -242,4 +242,43 @@ TEST_F(HttpServerPlainListenTest, ServesPlainHttpAcrossSeveralRings) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Port validation (review item L3)
+//
+// sockaddr_in::sin_port is 16 bits, and the multi-ring path never range-checked
+// the port, so htons() truncated and the server bound one nobody asked for:
+// measured, 70000 became 4464, -1 became 65535, and 65536 became 0 -- which
+// bind(2) reads as "any free port". SingleRingHttpServer checked; HttpServer did
+// not, and listen() being public now makes that the ordinary entry point.
+// ---------------------------------------------------------------------------
+
+TEST(HttpServerPortRange, AnOutOfRangePortIsRefused) {
+    static ConsoleLogger console_logger;
+    Logger::setGlobalLogger(&console_logger);
+
+    for (int port : {70000, 65536, -1, -70000}) {
+        ServerConfig cfg;
+        cfg.num_rings = 1;
+        HttpServer server(cfg);
+        EXPECT_FALSE(server.listen(port, "127.0.0.1"))
+            << "listen(" << port << ") was accepted; it would have bound "
+            << ntohs(htons(port));
+        server.stop();
+    }
+}
+
+// Guard: a port in range, and 0 meaning "any free port", still work.
+TEST(HttpServerPortRange, PortsInRangeAreStillAccepted) {
+    static ConsoleLogger console_logger;
+    Logger::setGlobalLogger(&console_logger);
+
+    for (int port : {0, 18995}) {
+        ServerConfig cfg;
+        cfg.num_rings = 1;
+        HttpServer server(cfg);
+        EXPECT_TRUE(server.listen(port, "127.0.0.1")) << "listen(" << port << ") was refused";
+        server.stop();
+    }
+}
+
 }  // namespace
