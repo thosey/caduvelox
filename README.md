@@ -6,14 +6,16 @@
   <img src="logo/caduvelox-logo-full-color.png" alt="Caduvelox" width="360">
 </p>
 
-C++ HTTP/HTTPS framework built on io_uring, kernel TLS (kTLS), and lock-free architecture.
+C++ HTTP/HTTPS framework built on io_uring, kernel TLS (kTLS), and thread-local memory pools.
 
 ## Features
 
 - **io_uring** with multi-shot operations for async I/O without syscall overhead
 - **Kernel TLS (kTLS)** for hardware-accelerated HTTPS encryption
 - **Zero-copy file serving** via splice(2) - no userspace buffer copies
-- **Lock-free memory pools** - zero mutex contention in hot path
+- **Thread-local memory pools** - no locking on the hot path. Pools belong to the
+  ring thread that owns them, so a job must be allocated and freed on the same
+  thread; nothing crosses threads
 - **API**: Express-style HTTP routing + low-level Job API
 
 ## Quick Start
@@ -76,16 +78,15 @@ cd build/examples/rest_api_server
 ## Usage Example
 
 ```cpp
+#include "caduvelox/ServerConfig.hpp"
 #include "caduvelox/http/HttpServer.hpp"
-#include "caduvelox/Server.hpp"
 
 int main() {
-    caduvelox::Server io_server;
-    io_server.init(256);
-    
-    caduvelox::HttpServer http(io_server);
+    caduvelox::ServerConfig cfg;   // cfg.num_rings = 0 means one ring per core
+    caduvelox::HttpServer http(cfg);
 
-    // Add routes
+    // Routes must be registered before listening: each ring takes a copy of the
+    // router when it starts.
     http.addRoute("GET", R"(^/$)", [](const auto& req, auto& res) {
         res.html("<h1>Hello, Caduvelox!</h1>");
     });
@@ -94,17 +95,39 @@ int main() {
         res.json(R"({"status":"ok"})");
     });
 
-    // Listen and run
-    if (!http.listen(8080)) {
+    // A capture arrives percent-decoded and without the query string.
+    http.addRouteWithCaptures("GET", R"(^/files/(.+)$)",
+        [](const auto& req, auto& res, const std::smatch& m) {
+            res.sendFile("/srv/www/" + m[1].str());
+        });
+
+    if (!http.listen(8080)) {        // listenKTLS(...) to terminate TLS here
         return 1;
     }
-    
-    io_server.run();
+
+    http.run();                       // blocks until stop()
     return 0;
 }
 ```
 
-Use `res.sendFile(path)` for zero-copy file serving. Routes accept ECMAScript regular expressions.
+Use `res.sendFile(path)` for zero-copy file serving. Routes accept ECMAScript regular
+expressions, matched against the decoded path with the query string removed.
+
+### HTTP/1.1 feature boundary
+
+Deliberately a subset. What is **not** implemented is worth knowing before you build on it:
+
+| | |
+|---|---|
+| `Transfer-Encoding` | Not supported in any form. A request carrying it is answered `400` — this server applies no transfer codings, so honouring the header would mean framing a body two different ways |
+| `Range` requests | Not parsed. `HTTPFileJob` can serve `206 Partial Content` from an offset, but nothing wires the header up, so no resumable downloads or media seeking |
+| `Expect: 100-continue` | Not implemented |
+| `HEAD` | Not special-cased; a `HEAD` route is an ordinary route and its body is sent |
+| Pipelining | Supported, but strictly serialised: one response in flight per connection, and request *k+1* is not parsed until response *k* is on the wire |
+| Paths | Percent-decoded one segment at a time. An escape that would produce `/` or a `..` segment is refused with `400`; a literal `..` reaches the handler |
+| File serving | Regular files only. Confining a path to a document root is the caller's decision — see `examples/static_https_server` |
+| Request limits | 8 KiB request line, 16 KiB per header line, 200 headers, 1 GiB declared body. Over-long requests get `431`/`413`; malformed ones get `400` |
+| Logging | Per-request tracing is off by default. `caduvelox::Logger::setLevel(caduvelox::LogLevel::Debug)` turns it on; it costs roughly 15% of a request's CPU |
 
 ## Architecture
 
@@ -120,7 +143,8 @@ Use `res.sendFile(path)` for zero-copy file serving. Routes accept ECMAScript re
 
 ## Requirements
 
-- **Linux kernel**: 5.19+ (6.0+ recommended for multi-shot operations)
+- **Linux kernel**: 6.0+. Multi-shot recv is required, not optional, and landed in
+  6.0; provided buffer rings need 5.19. Developed and tested on 7.x
 - **Compiler**: C++20 (GCC 10+, Clang 12+)
 - **liburing**: 2.1+
 - **OpenSSL**: 3.0+ with kTLS support
@@ -129,7 +153,7 @@ Use `res.sendFile(path)` for zero-copy file serving. Routes accept ECMAScript re
 ## kTLS Notes
 
 Kernel TLS requires:
-- Kernel 5.15+ (6.2+ recommended for zero-copy sendfile)
+- Kernel 6.0+, as above (kTLS itself is older, but the framework's floor is higher)
 - `CONFIG_TLS=y` or `CONFIG_TLS=m` in kernel config
 - OpenSSL built with KTLS support
 

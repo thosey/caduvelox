@@ -292,14 +292,15 @@ std::optional<IoJob::CleanupCallback> KTLSJob::handleCompletion(Server& server, 
 
     // We're in HANDSHAKING state
     if (cqe->res < 0) {
-            // -ECANCELED indicates the linked timeout was canceled because the poll
-            // completed normally earlier. We ignore these and continue.
+            // -ECANCELED means the linked timeout was cancelled because the poll
+            // completed normally first. Nothing to do but wait for the real
+            // completion.
+            //
+            // This used to re-check for ERROR_STATE or KTLS_READY here. It could
+            // never hold: handleCompletion() returns early for both of those
+            // states well above this point, so anything reaching here is in
+            // HANDSHAKING by construction.
             if (cqe->res == -ECANCELED) {
-                // Timeout was canceled, check if we should cleanup now
-                if ((state_ == State::ERROR_STATE || state_ == State::KTLS_READY) && 
-                    pending_operations_ == 0) {
-                    return cleanupKTLSJob;
-                }
                 return std::nullopt;
             }
 

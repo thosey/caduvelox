@@ -37,6 +37,13 @@ class Server;
  *           // handshake failed 
  *       }
  *   );
+ *
+ * Throughput note: SSL_accept() runs synchronously on the ring thread. The
+ * handshake's waiting is asynchronous -- the job polls the socket through
+ * io_uring between steps -- but the cryptographic work itself, including the
+ * private-key operation, happens inline. So handshakes per second are bounded
+ * per core, and a burst of new TLS connections competes with request processing
+ * on that ring rather than being spread over a thread pool.
  */
 class KTLSJob : public IoJob {
 public:

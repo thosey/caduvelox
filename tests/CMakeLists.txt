@@ -1,25 +1,18 @@
-# Generate self-signed certificate and key for TLS tests if not present
-set(TEST_CERT_SRC ${CMAKE_CURRENT_SOURCE_DIR}/test_cert.pem)
-set(TEST_KEY_SRC ${CMAKE_CURRENT_SOURCE_DIR}/test_key.pem)
+# Self-signed certificate and key for the TLS tests, generated straight into the
+# build directory. The tests open them by relative path and run with the build
+# directory as their working directory.
+#
+# They used to be generated into the source tree and then copied here, which left
+# untracked artefacts in tests/ (*.pem is gitignored, so they simply accumulated)
+# and made a build depend on whatever a previous one had left behind.
 set(TEST_CERT_BUILD ${CMAKE_CURRENT_BINARY_DIR}/test_cert.pem)
 set(TEST_KEY_BUILD ${CMAKE_CURRENT_BINARY_DIR}/test_key.pem)
 
 add_custom_command(
-    OUTPUT ${TEST_CERT_SRC} ${TEST_KEY_SRC}
-    COMMAND openssl req -x509 -newkey rsa:2048 -keyout ${TEST_KEY_SRC} -out ${TEST_CERT_SRC} -days 365 -nodes -subj "/CN=localhost"
+    OUTPUT ${TEST_CERT_BUILD} ${TEST_KEY_BUILD}
+    COMMAND openssl req -x509 -newkey rsa:2048 -keyout ${TEST_KEY_BUILD} -out ${TEST_CERT_BUILD} -days 365 -nodes -subj "/CN=localhost"
     COMMENT "Generating self-signed TLS certificate and key for tests..."
     VERBATIM
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-# Copy certificates to build directory so tests can find them
-add_custom_command(
-    OUTPUT ${TEST_CERT_BUILD} ${TEST_KEY_BUILD}
-    COMMAND ${CMAKE_COMMAND} -E copy ${TEST_CERT_SRC} ${TEST_CERT_BUILD}
-    COMMAND ${CMAKE_COMMAND} -E copy ${TEST_KEY_SRC} ${TEST_KEY_BUILD}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/tests
-    DEPENDS ${TEST_CERT_SRC} ${TEST_KEY_SRC}
-    COMMENT "Copying TLS certificates to build directory..."
 )
 
 # Job Architecture Tests - Temporarily disabled during refactoring

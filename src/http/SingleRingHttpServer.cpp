@@ -534,11 +534,15 @@ void HttpConnectionJob::handleReadError(int error) {
         return;
     }
 
+    // client_fd_ is already -1 on the deferred-close path, so naming it in a log
+    // line printed "fd=-1" for the case this function is most often reached by.
+    const int fd_for_log = client_fd_ >= 0 ? client_fd_ : deferred_close_fd_;
+
     if (error == -ECANCELED) {
         Logger::debug("HttpConnectionJob: Recv cancelled (shutdown) fd=" +
-                                         std::to_string(client_fd_));
+                                         std::to_string(fd_for_log));
     } else {
-        Logger::getInstance().logError("HttpConnectionJob: Read error fd=" + std::to_string(client_fd_) +
+        Logger::getInstance().logError("HttpConnectionJob: Read error fd=" + std::to_string(fd_for_log) +
                                        ", error=" + std::to_string(error));
     }
     closeConnection();

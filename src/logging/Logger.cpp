@@ -47,8 +47,14 @@ void Logger::setGlobalLogger(Logger* ptr) {
 Logger& Logger::getInstance() {
     auto* ptr = logger.load(std::memory_order_acquire);
     if (!ptr) {
-        // Fallback: create a temporary console logger if none is set
-        // Use a function-static variable to ensure it's initialized on first use
+        // No logger was installed, so fall back to the console.
+        //
+        // Deliberately leaked, and deliberately a raw pointer rather than a
+        // function-static object: this reference is handed out to jobs that may
+        // log during static destruction, and a static object would be destroyed
+        // while they are still using it. Leaking one small object for the life of
+        // the process is the cheaper trade. Sanitizer suppressions are not needed
+        // -- LeakSanitizer sees it as still reachable.
         static caduvelox::ConsoleLogger* fallback_logger = new caduvelox::ConsoleLogger();
         return *fallback_logger;
     }
