@@ -44,11 +44,32 @@ SingleRingHttpServer::~SingleRingHttpServer() {
     }
 }
 
+// Unlike the multi-ring server, a late route here would take effect: connection
+// jobs hold a reference to this object's router. That is worse, not better --
+// adding to the regex vector while the ring thread is matching against it is a
+// data race. Refused for the same reason, so the two classes behave alike.
+bool SingleRingHttpServer::routesStillAccepted(const char* what) const {
+    if (!running_) {
+        return true;
+    }
+    Logger::getInstance().logError(
+        std::string("HttpServer: ") + what + " called after listen(); connection jobs are "
+        "already matching against this router, so modifying it now is a data race. "
+        "Register every route before listening.");
+    return false;
+}
+
 void SingleRingHttpServer::addRoute(const std::string& method, const std::string& pathRegex, HttpHandler handler) {
+    if (!routesStillAccepted("addRoute()")) {
+        return;
+    }
     router_.addRoute(method, pathRegex, std::move(handler));
 }
 
 void SingleRingHttpServer::addRouteWithCaptures(const std::string& method, const std::string& pathRegex, HttpHandlerWithCaptures handler) {
+    if (!routesStillAccepted("addRouteWithCaptures()")) {
+        return;
+    }
     router_.addRouteWithCaptures(method, pathRegex, std::move(handler));
 }
 

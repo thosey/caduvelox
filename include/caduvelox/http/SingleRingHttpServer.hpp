@@ -132,6 +132,8 @@ private:
     // Install this ring's shutdown sweep and its startup hook (which arms the
     // accept on the ring thread). Called by every listen path.
     void installRingLocalHooks();
+    // Refuse route registration once listening, with an explanation. See the .cpp.
+    bool routesStillAccepted(const char* what) const;
     void startAccepting();
 
     /**

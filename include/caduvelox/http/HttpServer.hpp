@@ -50,8 +50,11 @@ public:
     HttpServer& operator=(const HttpServer&) = delete;
 
     /**
-     * Add a route to all HttpServer instances
-     * Must be called before listenKTLS()
+     * Add a route to all HttpServer instances.
+     *
+     * Must be called before listen()/listenKTLS(): each ring copies the router as
+     * it starts, so a route added later would never match. Calling it late logs an
+     * error and changes nothing.
      */
     void addRoute(const std::string& method, const std::string& path_pattern,
                   HttpHandler handler);
@@ -126,6 +129,8 @@ public:
 private:
     // Shared by listen() and listenKTLS(): one socket and one
     // SingleRingHttpServer per ring, differing only in whether TLS is terminated.
+    // Refuse route registration once listening, with an explanation. See the .cpp.
+    bool routesStillAccepted(const char* what) const;
     bool startRings(int port, const std::string& bind_addr, bool use_ktls);
     int createServerSocket(int port, const std::string& bind_addr);
 

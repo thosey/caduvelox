@@ -97,13 +97,38 @@ void HttpServer::joinAllRings() {
     }
 }
 
+// Routes added once the server is listening reach nobody: startRings() copies the
+// router into each ring's SingleRingHttpServer as it starts it, and nothing reads
+// this copy again. Say so rather than accepting a route that will never match --
+// examples/rest_api_server was registering routes after listen() and losing them
+// silently, which is what this guard is for.
+//
+// Sharing the router with the rings instead would mean mutating routing state
+// while ring threads dispatch against it; the per-ring copy exists so dispatch
+// touches read-only data. Refusing is the cheaper correctness.
+bool HttpServer::routesStillAccepted(const char* what) const {
+    if (isStopped()) {
+        return true;
+    }
+    Logger::getInstance().logError(
+        std::string("HttpServer: ") + what + " called after the server started listening; "
+        "the route would never match. Register every route before listen()/listenKTLS().");
+    return false;
+}
+
 void HttpServer::addRoute(const std::string& method, const std::string& path_pattern,
                                     HttpHandler handler) {
+    if (!routesStillAccepted("addRoute()")) {
+        return;
+    }
     router_.addRoute(method, path_pattern, std::move(handler));
 }
 
 void HttpServer::addRouteWithCaptures(const std::string& method, const std::string& path_pattern,
                                       HttpHandlerWithCaptures handler) {
+    if (!routesStillAccepted("addRouteWithCaptures()")) {
+        return;
+    }
     router_.addRouteWithCaptures(method, path_pattern, std::move(handler));
 }
 
