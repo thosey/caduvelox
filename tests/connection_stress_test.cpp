@@ -337,7 +337,7 @@ protected:
         });
         
         // Listen on KTLS port with test certificates
-        ASSERT_TRUE(http_server_->listenKTLS(18890, "test_cert.pem", "test_key.pem", "127.0.0.1"));
+        ASSERT_TRUE(http_server_->listenKTLS(18890, CADUVELOX_TEST_CERT, CADUVELOX_TEST_KEY, "127.0.0.1"));
         
         // Start event loop
         event_loop_thread_ = std::thread([this]() {

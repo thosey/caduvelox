@@ -26,8 +26,8 @@ protected:
 };
 
 TEST_F(MultiRingKTLSShutdownTest, NoDoubleFreeOnShutdown) {
-    const std::string cert_path = "test_cert.pem";
-    const std::string key_path = "test_key.pem";
+    const std::string cert_path = CADUVELOX_TEST_CERT;
+    const std::string key_path = CADUVELOX_TEST_KEY;
     const int num_rings = 3;  // Use multiple rings to expose the issue
     const int test_port = 8445;
     
@@ -78,8 +78,8 @@ TEST_F(MultiRingKTLSShutdownTest, NoDoubleFreeOnShutdown) {
 }
 
 TEST_F(MultiRingKTLSShutdownTest, MultipleStartStopCycles) {
-    const std::string cert_path = "test_cert.pem";
-    const std::string key_path = "test_key.pem";
+    const std::string cert_path = CADUVELOX_TEST_CERT;
+    const std::string key_path = CADUVELOX_TEST_KEY;
     const int num_rings = 4;
     
     // Run multiple start/stop cycles to amplify the issue
@@ -113,8 +113,8 @@ TEST_F(MultiRingKTLSShutdownTest, MultipleStartStopCycles) {
 }
 
 TEST_F(MultiRingKTLSShutdownTest, LargeRingCount) {
-    const std::string cert_path = "test_cert.pem";
-    const std::string key_path = "test_key.pem";
+    const std::string cert_path = CADUVELOX_TEST_CERT;
+    const std::string key_path = CADUVELOX_TEST_KEY;
     const int num_rings = 8;  // Larger ring count = more frees
     const int test_port = 8456;
     

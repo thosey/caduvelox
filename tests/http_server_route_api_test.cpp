@@ -100,7 +100,7 @@ protected:
     }
 
     void start() {
-        ASSERT_TRUE(server_->listenKTLS(port_, "test_cert.pem", "test_key.pem", "127.0.0.1"))
+        ASSERT_TRUE(server_->listenKTLS(port_, CADUVELOX_TEST_CERT, CADUVELOX_TEST_KEY, "127.0.0.1"))
             << "could not start the TLS listener";
         thread_ = std::thread([this] { server_->run(); });
         std::this_thread::sleep_for(std::chrono::milliseconds(300));

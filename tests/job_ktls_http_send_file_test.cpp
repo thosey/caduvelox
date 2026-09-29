@@ -138,7 +138,7 @@ protected:
 
     void startServer() {
         // Start HTTPS server with KTLS
-        ASSERT_TRUE(https_server->listenKTLS(test_port, "test_cert.pem", "test_key.pem", "127.0.0.1"));
+        ASSERT_TRUE(https_server->listenKTLS(test_port, CADUVELOX_TEST_CERT, CADUVELOX_TEST_KEY, "127.0.0.1"));
         
         // Start event loop
         server_thread = std::thread([this]() {

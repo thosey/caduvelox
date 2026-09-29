@@ -147,6 +147,19 @@ set(TEST_SOURCES
 add_executable(caduvelox_tests ${TEST_SOURCES})
 add_dependencies(caduvelox_tests generate_test_cert_key)
 
+# Absolute paths to the generated certificate and key.
+#
+# The tests used to open them as "test_cert.pem", relative to the working
+# directory, which made them depend on where they were launched from: running the
+# binary out of the build directory worked, and the one ctest entry with
+# WORKING_DIRECTORY pointed at the source tree only worked because a copy of the
+# certificates happened to be sitting there. Passing absolute paths removes the
+# dependency instead of moving it.
+target_compile_definitions(caduvelox_tests PRIVATE
+    CADUVELOX_TEST_CERT=\"${TEST_CERT_BUILD}\"
+    CADUVELOX_TEST_KEY=\"${TEST_KEY_BUILD}\"
+)
+
 
 # Create test executable for HTTP server
 #add_executable(http_server_tests
@@ -218,4 +231,7 @@ add_test(NAME ServerConfigTests COMMAND caduvelox_tests --gtest_filter="ServerCo
 
 # Add KTLS tests separately (these might fail in CI)
 add_test(NAME KTLSTests COMMAND caduvelox_tests "--gtest_filter=KTLS*")
-set_tests_properties(KTLSTests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+# No WORKING_DIRECTORY override: it used to point at the source tree so these
+# tests would find the certificates that were generated there. The certificates
+# now live only in the build directory and the tests are given absolute paths, so
+# this test runs from the same place as every other one.

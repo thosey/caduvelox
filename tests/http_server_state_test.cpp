@@ -72,8 +72,8 @@ protected:
         });
     }
 
-    static constexpr const char* kCertPath = "test_cert.pem";
-    static constexpr const char* kKeyPath = "test_key.pem";
+    static constexpr const char* kCertPath = CADUVELOX_TEST_CERT;
+    static constexpr const char* kKeyPath = CADUVELOX_TEST_KEY;
 };
 
 TEST_F(HttpServerTest, InitialStateIsStopped) {
