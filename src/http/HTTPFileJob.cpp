@@ -56,6 +56,10 @@ HTTPFileJob* HTTPFileJob::createFromPool(
     return job;
 }
 
+void HTTPFileJob::requestRange(const http::ByteRangeSpec& spec) {
+    range_spec_ = spec;
+}
+
 void HTTPFileJob::start(Server& server) {
     Logger::debug("HTTPFileJob: Starting file transfer fd=" + 
                                    std::to_string(client_fd_) + ", file=" + file_path_);
@@ -126,7 +130,30 @@ void HTTPFileJob::openFile() {
     }
     
     file_size_ = st.st_size;
-    
+    file_mtime_ = static_cast<int64_t>(st.st_mtime);
+
+    // Resolve a client-supplied range now that the size is known. This is the
+    // only point where "the last 500 bytes" becomes an offset, and it uses the
+    // fstat(2) above, so the Content-Range reported and the bytes spliced come
+    // from one view of the file.
+    if (range_spec_.has_value()) {
+        const auto resolved = range_spec_->resolve(file_size_);
+        if (!resolved.has_value()) {
+            Logger::getInstance().logError("HTTPFileJob: range cannot be satisfied for " +
+                                           file_path_ + " (size=" + std::to_string(file_size_) + ")");
+            range_not_satisfiable_size_ = file_size_;
+            close(file_fd_);
+            file_fd_ = -1;
+            return;
+        }
+        offset_ = resolved->offset;
+        length_ = resolved->length;
+        // A satisfied range is a partial response even when it happens to cover
+        // the whole file ("bytes=0-" does): the client asked in range terms and
+        // Content-Range is what answers it.
+        partial_ = true;
+    }
+
     // Validate range if specified.
     //
     // This used to fall through to the same 404 as a missing file, telling a
@@ -148,6 +175,11 @@ void HTTPFileJob::openFile() {
     if (length_ == 0 || offset_ + length_ > file_size_) {
         length_ = file_size_ - offset_;
     }
+
+    // A caller that passed an explicit offset or length is also asking for a
+    // part of the file. Computed after the clamp above, so "length longer than
+    // the file" counts as the whole file rather than a partial response.
+    partial_ = partial_ || offset_ > 0 || length_ < file_size_;
     
     // An empty file has no last byte; "offset + length - 1" would underflow.
     const std::string range = length_ == 0
@@ -171,7 +203,7 @@ void HTTPFileJob::startSendingHeaders(Server& server) {
     }
     
     // Set appropriate status code
-    if (offset_ > 0 || length_ < file_size_) {
+    if (partial_) {
         response_.setStatus(206, "Partial Content");
         response_.headers["content-range"] = "bytes " + std::to_string(offset_) + "-" + 
                                            std::to_string(offset_ + length_ - 1) + "/" + std::to_string(file_size_);
@@ -205,6 +237,26 @@ void HTTPFileJob::startSendingHeaders(Server& server) {
         response_.headers["content-type"] = content_type;
     }
     
+    // Say that ranges work. Without this field a client has no way to know a
+    // range request will be honoured rather than answered with the whole file,
+    // so a download manager or media player asks for everything and discards
+    // what it already has. RFC 9110 section 14.3.
+    if (response_.headers.find("accept-ranges") == response_.headers.end()) {
+        response_.headers["accept-ranges"] = "bytes";
+    }
+
+    // A validator, so a client resuming an interrupted transfer can tell
+    // whether it is still resuming the same bytes. Without one, a range request
+    // against a file that changed in between stitches two versions together and
+    // nothing detects it. Costs nothing: the mtime came from the fstat(2) that
+    // openFile() already did for the size.
+    if (response_.headers.find("last-modified") == response_.headers.end()) {
+        std::string date = http::format_http_date(file_mtime_);
+        if (!date.empty()) {
+            response_.headers["last-modified"] = std::move(date);
+        }
+    }
+
     // Add CORS headers to allow cross-origin CSS/JS to load
     if (response_.headers.find("access-control-allow-origin") == response_.headers.end()) {
         response_.headers["access-control-allow-origin"] = "*";
@@ -338,10 +390,13 @@ void HTTPFileJob::sendError(Server& server, int status_code, const std::string& 
     error_response.setStatus(status_code, message);
     error_response.headers["content-type"] = "text/plain";
 
-    // A 416 says what the satisfiable range would have been: "bytes */<size>".
+    // A 416 says what the satisfiable range would have been: "bytes */<size>",
+    // and repeats that ranges are accepted at all -- the request failed over
+    // its bounds, not over the server's willingness to serve a part.
     if (range_not_satisfiable_size_.has_value()) {
         error_response.headers["content-range"] =
             "bytes */" + std::to_string(*range_not_satisfiable_size_);
+        error_response.headers["accept-ranges"] = "bytes";
     }
 
     // start() can get here before startSendingHeaders() has normalized anything.

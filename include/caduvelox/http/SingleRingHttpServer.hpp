@@ -10,10 +10,12 @@
 #include "caduvelox/http/HttpRouter.hpp"
 #include "caduvelox/http/HttpTypes.hpp"
 #include "caduvelox/http/HttpParser.hpp"
+#include "caduvelox/http/RangeRequest.hpp"
 #include "caduvelox/logger/Logger.hpp"
 #include "caduvelox/util/PoolManager.hpp"
 #include <openssl/ssl.h>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <string>
 
@@ -255,6 +257,13 @@ private:
     unsigned idle_timeout_ms_;
     bool reading_active_;
     bool keep_alive_;  // Track if connection should remain open
+    // The byte range this request asked for, if any. Parsed in
+    // handleHttpRequest() and consumed by sendResponse(), which is the only
+    // place a file response is constructed -- the Range field is a property of
+    // the request and the HttpResponse carries no trace of it. Reset for every
+    // request, so a pipelined request without a Range field cannot inherit the
+    // previous one's.
+    std::optional<http::ByteRangeSpec> pending_range_;
     // Persistence is not this request's version default, so a response that
     // keeps the connection has to say keep-alive (HTTP/1.0).
     bool advertise_keep_alive_ = false;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "caduvelox/http/HttpTypes.hpp"
+#include "caduvelox/http/RangeRequest.hpp"
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <memory>
@@ -65,6 +67,19 @@ public:
     );
 
     /**
+     * Serve the range the client asked for, instead of the whole file.
+     *
+     * Takes the range in the form the client wrote it, not an offset: a suffix
+     * range ("the last 500 bytes") has no offset until the file has been
+     * stat()ed, and openFile() is the only place that happens. Resolving there
+     * means the same fstat(2) decides the Content-Range and the bytes spliced.
+     *
+     * A range that turns out not to be satisfiable becomes a 416 carrying the
+     * real length. Must be called before start().
+     */
+    void requestRange(const http::ByteRangeSpec& spec);
+
+    /**
      * Start the HTTP file transfer
      */
     void start(Server& server);
@@ -89,6 +104,12 @@ private:
     std::string file_path_;
     uint64_t offset_;
     uint64_t length_;
+    // The range as the client wrote it, when one was asked for. Resolved
+    // against the real file size in openFile(); see requestRange().
+    std::optional<http::ByteRangeSpec> range_spec_;
+    // True once this response is known to be a partial one, i.e. 206 with a
+    // Content-Range rather than 200 with the whole file.
+    bool partial_ = false;
     HttpResponse response_;
     
     int file_fd_;
@@ -98,6 +119,10 @@ private:
     // file that is simply not there, which is otherwise the same (file_fd_ < 0).
     std::optional<uint64_t> range_not_satisfiable_size_;
     uint64_t file_size_;
+    // Last modification time of the file being served, from the same fstat(2)
+    // that gave file_size_. Sent as Last-Modified so a client resuming an
+    // interrupted range transfer has something to validate against.
+    int64_t file_mtime_ = 0;
     std::unique_ptr<char[]> header_data_;
     size_t header_size_;
     

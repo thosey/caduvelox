@@ -681,6 +681,18 @@ void HttpConnectionJob::handleHttpRequest(const HttpRequest& request) {
     // Determine if we should keep connection alive after this response
     keep_alive_ = shouldKeepAlive(request);
     advertise_keep_alive_ = request.version != "HTTP/1.1";
+
+    // Read the Range field here, where the request still exists, for
+    // sendResponse() to apply if the route turns out to serve a file. Range is
+    // only defined for GET (RFC 9110 section 14.2), and must be ignored on any
+    // other method -- a ranged POST is a whole-representation POST, and
+    // answering one with 206 would have the handler's reply silently truncated.
+    //
+    // Assigned unconditionally so the previous request on this connection
+    // cannot leak its range into this one.
+    pending_range_ = (request.method == "GET")
+        ? http::parse_range(request.getHeader("range"))
+        : std::nullopt;
     
     // This method is called when NOT using affinity workers (fallback)
     HttpResponse response;
@@ -734,6 +746,11 @@ void HttpConnectionJob::sendResponse(HttpResponse response) {
         // Claim the connection's single response slot for the file transfer.
         response_in_flight_ = true;
 
+        // Taken by value and cleared, so neither this transfer nor the next
+        // request on this connection can see a stale range.
+        const std::optional<http::ByteRangeSpec> range = pending_range_;
+        pending_range_.reset();
+
         auto http_file_job = HTTPFileJob::createFromPool(
             client_fd_,
             file_path,
@@ -756,6 +773,11 @@ void HttpConnectionJob::sendResponse(HttpResponse response) {
         
         if (http_file_job) {
             Logger::debug("HttpConnectionJob: HTTPFileJob allocated, starting...");
+            // Before start(): openFile() is what resolves the range, and it
+            // runs inside start().
+            if (range.has_value()) {
+                http_file_job->requestRange(*range);
+            }
             // HTTPFileJob is a composite job - start it directly (it creates child jobs for io_uring)
             http_file_job->start(job_server_);
             Logger::debug("HttpConnectionJob: HTTPFileJob started");

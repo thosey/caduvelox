@@ -120,7 +120,7 @@ Deliberately a subset. What is **not** implemented is worth knowing before you b
 | | |
 |---|---|
 | `Transfer-Encoding` | Not supported in any form. A request carrying it is answered `400` — this server applies no transfer codings, so honouring the header would mean framing a body two different ways |
-| `Range` requests | Not parsed. `HTTPFileJob` can serve `206 Partial Content` from an offset, but nothing wires the header up, so no resumable downloads or media seeking |
+| `Range` requests | A **single** `bytes` range is served as `206 Partial Content`, in all three forms (`bytes=0-499`, `bytes=500-`, `bytes=-500`); file responses advertise `Accept-Ranges: bytes` and carry `Last-Modified`. A multi-range request gets the whole file rather than a `multipart/byteranges` body, and `If-Range` is not honoured |
 | `Expect: 100-continue` | Not implemented |
 | `HEAD` | Not special-cased; a `HEAD` route is an ordinary route and its body is sent |
 | Pipelining | Supported, but strictly serialised: one response in flight per connection, and request *k+1* is not parsed until response *k* is on the wire |
