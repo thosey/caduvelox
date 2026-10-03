@@ -131,6 +131,12 @@ private:
     // SingleRingHttpServer per ring, differing only in whether TLS is terminated.
     // Refuse route registration once listening, with an explanation. See the .cpp.
     bool routesStillAccepted(const char* what) const;
+    // Shared by listen() and listenKTLS(): refuse a call on a server that is not
+    // stopped, and refuse a second one on a server that has already listened.
+    // Called before listenKTLS() creates its SSL context, which a refusal would
+    // otherwise leak. See the .cpp for why a restart is refused rather than made
+    // to work.
+    bool canStartListening(const char* what) const;
     bool startRings(int port, const std::string& bind_addr, bool use_ktls);
     int createServerSocket(int port, const std::string& bind_addr);
 

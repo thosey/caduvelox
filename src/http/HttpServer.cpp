@@ -132,9 +132,46 @@ void HttpServer::addRouteWithCaptures(const std::string& method, const std::stri
     router_.addRouteWithCaptures(method, path_pattern, std::move(handler));
 }
 
-bool HttpServer::listen(int port, const std::string& bind_addr) {
+bool HttpServer::canStartListening(const char* what) const {
     if (!isStopped()) {
-        Logger::getInstance().logError("HttpServer: Server is not in Stopped state");
+        Logger::getInstance().logError(
+            std::string("HttpServer: ") + what + " called while the server is not stopped");
+        return false;
+    }
+
+    // A server that has already listened cannot listen again, and the state check
+    // above cannot catch it: a fresh HttpServer is constructed Stopped, and stop()
+    // returns it to Stopped, so isStopped() permits the first call and a second one
+    // after a restart alike.
+    //
+    // Nothing resets the ring state between those calls. startRings() only ever
+    // reserves and push_back()s, so a second call appended a whole second set of
+    // rings to the first set -- leaving twice the configured number, half of them
+    // belonging to the previous incarnation with already-stopped, already-drained
+    // Servers, and run() then starting threads on all of them. getNumRings() went
+    // on reporting config_.num_rings, which no longer matched service_rings_.size().
+    // listenKTLS() also overwrote ssl_ctx_ without freeing the first one, so a
+    // restart dropped an OpenSSL context on the floor.
+    //
+    // Refused rather than supported. Making a restart work means destroying the
+    // previous rings, and their threads have to be joined before the
+    // SingleRingHttpServer objects their completion handlers dereference are
+    // destroyed -- the opposite of the declaration order that keeps the normal
+    // teardown correct (see ~HttpServer()). That ordering is where review item L11
+    // lived, so it is not a change to make on the way past. Construct a new
+    // HttpServer instead; it costs one object.
+    if (!service_rings_.empty()) {
+        Logger::getInstance().logError(
+            std::string("HttpServer: ") + what + " called on a server that has already "
+            "listened; a restart is not supported. Construct a new HttpServer instead.");
+        return false;
+    }
+
+    return true;
+}
+
+bool HttpServer::listen(int port, const std::string& bind_addr) {
+    if (!canStartListening("listen()")) {
         return false;
     }
 
@@ -148,8 +185,9 @@ bool HttpServer::listen(int port, const std::string& bind_addr) {
 bool HttpServer::listenKTLS(int port, const std::string& cert_path, 
                                       const std::string& key_path,
                                       const std::string& bind_addr) {
-    if (!isStopped()) {
-        Logger::getInstance().logError("HttpServer: Server is not in Stopped state");
+    // Checked before the context is created, not after: assigning ssl_ctx_ is what
+    // used to leak the previous one, so a refusal has to happen first.
+    if (!canStartListening("listenKTLS()")) {
         return false;
     }
 
