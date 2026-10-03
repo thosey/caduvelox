@@ -127,6 +127,23 @@ public:
     bool isStopped() const { return getState() == ServerState::Stopped; }
 
 private:
+    // Test-only access to service_rings_, for the one defect that cannot be
+    // reproduced from the outside (review item L21).
+    //
+    // stop()'s CAS used to gate the shutdown work rather than just announcing it.
+    // Because state_ is shared with every ring's Server, any single ring calling
+    // Server::stop() already flips it to Stopping, and the next HttpServer::stop()
+    // -- including the destructor's -- then returned early, leaving the other
+    // rings running and their listening sockets open.
+    //
+    // Reproducing that needs one ring to flip the shared state on its own, and
+    // there is no public route to an individual ring: calling stop() twice does
+    // not do it, since the first call performs the full shutdown anyway. A friend
+    // declaration rather than an accessor, deliberately -- it adds nothing a
+    // production caller can reach, whereas a getter would outlive the test that
+    // wanted it and invite use elsewhere.
+    friend class HttpServerStopGateTest;
+
     // Shared by listen() and listenKTLS(): one socket and one
     // SingleRingHttpServer per ring, differing only in whether TLS is terminated.
     // Refuse route registration once listening, with an explanation. See the .cpp.

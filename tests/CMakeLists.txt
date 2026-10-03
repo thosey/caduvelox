@@ -132,6 +132,8 @@ set(TEST_SOURCES
     response_status_conformance_test.cpp
     # Listening twice on one HttpServer (review item L23)
     http_server_restart_test.cpp
+    # stop() must do the work even when it did not win the CAS (L11, L21)
+    http_server_stop_gate_test.cpp
     # What a cancel that cannot be submitted does to the connection (C5, L10)
     cancel_submission_failure_test.cpp
     # Byte-range requests: parsing, resolution, and the trip to the file job (L19)

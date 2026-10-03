@@ -60,6 +60,12 @@ protected:
 
         ServerConfig cfg;
         cfg.num_rings = 2;   // more than one, so a doubled set is unambiguous
+        // Tiny on purpose: the default 4096-deep ring with a 512 x 16 KiB buffer
+        // ring is a lot of pinned memory for a fixture that never moves a byte,
+        // and enough of it to fail ring init with ENOMEM under ctest -j 2.
+        cfg.queue_depth = 64;
+        cfg.buffer_ring_count = 16;
+        cfg.buffer_size_bytes = 4096;
         server_ = std::make_unique<HttpServer>(cfg);
     }
 
