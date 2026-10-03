@@ -221,7 +221,14 @@ TEST_F(SecurityRegressionTest, ServerShutdownCleanly) {
         res.body = std::to_string(request_count);
     });
     
-    bool listening = http_server.listen(50110);
+    // Port 0 means "any free port" (see PortRange.hpp). This used to be a
+    // hardcoded 50110, which CI's own invocation can collide with: ctest -j 2
+    // runs the CaduveloxTests entry (the whole binary) and the filtered
+    // SecurityRegressionTests entry concurrently, so this test can be executing
+    // in two processes at once -- and the second bind fails with EADDRINUSE on
+    // an assertion that demands success. The test never uses the port number,
+    // only that listening works, so there is nothing to pin it to.
+    bool listening = http_server.listen(0);
     EXPECT_TRUE(listening) << "Server should be able to listen";
     
     if (listening) {

@@ -130,6 +130,8 @@ set(TEST_SOURCES
     http_server_route_api_test.cpp
     # Response status phrases, bodiless statuses, ranges past EOF (L13, L15, L16)
     response_status_conformance_test.cpp
+    # What a cancel that cannot be submitted does to the connection (C5, L10)
+    cancel_submission_failure_test.cpp
     # Byte-range requests: parsing, resolution, and the trip to the file job (L19)
     range_request_test.cpp
     # WriteJob against a regular file (review item L12)

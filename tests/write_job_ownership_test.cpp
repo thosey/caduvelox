@@ -406,4 +406,167 @@ TEST_F(WriteJobOwnershipTest, APartialWriteResubmitsAndDeliversEverything) {
         << "the resubmitted job was not returned to the pool";
 }
 
+// ---------------------------------------------------------------------------
+// A submit that fails with the entry already queued (review items H2, L10)
+// ---------------------------------------------------------------------------
+
+/**
+ * FailedSubmitLeavesTheEntryQueued above pins what the *kernel* does. This pins
+ * what WriteJob does about it, which is the part the fix turned on: the job is
+ * neither freed nor reported as failed, and the completion that arrives later
+ * runs the ordinary success path.
+ *
+ * L10 proposed fault-injection seams for this. None are needed: Server exposes
+ * its ring, so the same trick the test above uses -- pointing enter(2) at a
+ * descriptor that is not an io_uring -- forces the failure on a real Server
+ * without a line of production code knowing about it.
+ */
+class WriteJobFailedSubmitTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        static ConsoleLogger console_logger;
+        Logger::setGlobalLogger(&console_logger);
+        ASSERT_TRUE(server_.init(8));
+        ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv_), 0);
+    }
+
+    void TearDown() override {
+        if (sv_[0] >= 0) ::close(sv_[0]);
+        if (sv_[1] >= 0) ::close(sv_[1]);
+    }
+
+    // Run `fn` with the server's ring pointed at /dev/null, so any
+    // io_uring_enter() inside it fails while the submission queue is untouched.
+    template <typename Fn>
+    void withBrokenRing(Fn&& fn) {
+        struct io_uring* ring = server_.getRing();
+        const int real_fd = ring->ring_fd;
+        const int real_enter_fd = ring->enter_ring_fd;
+        const int dud = ::open("/dev/null", O_RDONLY);
+        ASSERT_GE(dud, 0);
+
+        ring->ring_fd = dud;
+        ring->enter_ring_fd = dud;
+        fn();
+        ring->ring_fd = real_fd;
+        ring->enter_ring_fd = real_enter_fd;
+        ::close(dud);
+    }
+
+    Server server_;
+    int sv_[2] = {-1, -1};
+};
+
+TEST_F(WriteJobFailedSubmitTest, AFailedSubmitNeitherFreesTheJobNorReportsAnError) {
+    const size_t writes_before = PoolManager::allocated<WriteJob>();
+
+    bool completed = false;
+    bool errored = false;
+    size_t bytes_written = 0;
+
+    const std::string payload = "pinned by a failed submit";
+    auto owned = std::make_unique<char[]>(payload.size());
+    std::memcpy(owned.get(), payload.data(), payload.size());
+
+    WriteJob* job = WriteJob::createFromPoolWithOwnedData(
+        sv_[0], std::move(owned), payload.size(),
+        [&](int, size_t n) { completed = true; bytes_written = n; },
+        [&](int, int) { errored = true; });
+    ASSERT_NE(job, nullptr);
+    ASSERT_EQ(PoolManager::allocated<WriteJob>(), writes_before + 1);
+
+    // The SQE is acquired and filled in, then the submit fails.
+    withBrokenRing([&]() { job->start(server_); });
+
+    EXPECT_FALSE(errored)
+        << "the operation is still queued and a completion is still coming; "
+           "reporting failure here is what lets a parent tear itself down "
+           "while its child is in flight";
+    EXPECT_FALSE(completed) << "nothing has been written yet";
+    EXPECT_EQ(PoolManager::allocated<WriteJob>(), writes_before + 1)
+        << "the entry carries this job's address in user_data, so freeing it "
+           "on the submit-failure path would leave the ring holding a dangling "
+           "pointer -- a use-after-free, not a leak fix";
+
+    // Nothing new is prepared: this hands the kernel the entry the failed
+    // submit left behind.
+    ASSERT_GE(server_.submit(), 1) << "the queued entry was lost";
+
+    struct __kernel_timespec ts{};
+    ts.tv_sec = 3;
+    struct io_uring_cqe* cqe = nullptr;
+    ASSERT_EQ(io_uring_wait_cqe_timeout(server_.getRing(), &cqe, &ts), 0)
+        << "no completion arrived for the entry left queued";
+    auto* completing = reinterpret_cast<IoJob*>(io_uring_cqe_get_data64(cqe));
+    EXPECT_EQ(static_cast<void*>(completing), static_cast<void*>(job))
+        << "the completion must carry the original job";
+    auto cleanup = completing->handleCompletion(server_, cqe);
+    io_uring_cqe_seen(server_.getRing(), cqe);
+    if (cleanup) (*cleanup)(completing);
+
+    EXPECT_TRUE(completed) << "the write completed normally once submitted";
+    EXPECT_FALSE(errored);
+    EXPECT_EQ(bytes_written, payload.size());
+    EXPECT_EQ(PoolManager::allocated<WriteJob>(), writes_before)
+        << "the job frees itself on the completion, as it would have anyway";
+
+    char buf[64] = {};
+    const ssize_t n = ::recv(sv_[1], buf, sizeof(buf), 0);
+    ASSERT_GT(n, 0);
+    EXPECT_EQ(std::string(buf, static_cast<size_t>(n)), payload);
+}
+
+/**
+ * The opposite case, for contrast: when no SQE could be had at all, nothing is
+ * queued, no completion is coming, and the job MUST be freed -- otherwise the
+ * pool slot is gone for the life of the process. Forced by filling the
+ * submission queue and breaking the ring, so submitWrite()'s flush-and-retry
+ * cannot recover a slot either.
+ */
+TEST_F(WriteJobFailedSubmitTest, NoSqeAtAllFreesTheJobAndReportsIt) {
+    const size_t writes_before = PoolManager::allocated<WriteJob>();
+
+    bool errored = false;
+    int error_code = 0;
+    const std::string payload = "no sqe for this";
+    auto owned = std::make_unique<char[]>(payload.size());
+    std::memcpy(owned.get(), payload.data(), payload.size());
+
+    WriteJob* job = WriteJob::createFromPoolWithOwnedData(
+        sv_[0], std::move(owned), payload.size(),
+        [](int, size_t) {},
+        [&](int, int err) { errored = true; error_code = err; });
+    ASSERT_NE(job, nullptr);
+
+    // Fill the queue so registerJob() returns nullptr, with the ring broken so
+    // the flush that would free a slot fails too.
+    int filled = 0;
+    for (;;) {
+        struct io_uring_sqe* sqe = io_uring_get_sqe(server_.getRing());
+        if (sqe == nullptr) break;
+        io_uring_prep_nop(sqe);
+        io_uring_sqe_set_data64(sqe, 0);
+        ++filled;
+    }
+    ASSERT_GT(filled, 0);
+
+    withBrokenRing([&]() { job->start(server_); });
+
+    EXPECT_TRUE(errored)
+        << "nothing was queued, so no completion will ever arrive to report it";
+    EXPECT_NE(error_code, 0);
+    EXPECT_EQ(PoolManager::allocated<WriteJob>(), writes_before)
+        << "a job with no queued operation must be freed here or its pool slot "
+           "is lost for the life of the process";
+
+    // Submit and consume the filler no-ops so the ring is left quiet. They
+    // are not jobs, so their completions are dropped rather than dispatched.
+    if (server_.submit() > 0) {
+        struct io_uring_cqe* cqe = nullptr;
+        while (io_uring_peek_cqe(server_.getRing(), &cqe) == 0) {
+            io_uring_cqe_seen(server_.getRing(), cqe);
+        }
+    }
+}
+
 }  // namespace
